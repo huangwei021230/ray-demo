@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ray Distributed Computing — Interactive Paper Demo</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+  <!-- Top Control Bar -->
+  <header id="control-bar">
+    <div class="controls-left">
+      <div class="control-group">
+        <label for="program-select">Example</label>
+        <select id="program-select">
+          <option value="">Select program…</option>
+          <option value="add">add(a, b) — Paper Figure 5</option>
+          <option value="rl">Reinforcement Learning</option>
+          <option value="local">Local Scheduling</option>
+          <option value="chained">Chained Tasks</option>
+        </select>
+      </div>
+      <div class="control-group step-controls">
+        <button id="btn-reset" title="Reset" disabled>↺</button>
+        <button id="btn-back" title="Step Back" disabled>◀</button>
+        <button id="btn-play" title="Auto-play / Pause" disabled>⏯</button>
+        <button id="btn-step" title="Step Forward" disabled>▶</button>
+      </div>
+      <div class="control-group speed-control">
+        <label for="speed-slider">Speed</label>
+        <input type="range" id="speed-slider" min="200" max="3000" value="1000" step="100">
+        <span id="speed-value" class="mono">1.0s</span>
+      </div>
+    </div>
+    <div class="controls-right">
+      <span id="connection-status" class="status-dot status-disconnected">Disconnected</span>
+      <span id="program-title" class="program-title"></span>
+    </div>
+  </header>
+
+  <!-- Progress Section -->
+  <div id="progress-section">
+    <div id="progress-track">
+      <div id="progress-fill"></div>
+      <div id="progress-clickable"></div>
+    </div>
+    <span id="step-counter" class="mono">Step <strong id="current-step">0</strong> / <strong id="total-steps">0</strong></span>
+  </div>
+
+  <!-- Step Description Panel -->
+  <div id="step-description" class="empty">
+    <div class="desc-left">
+      <span id="phase-badge">—</span>
+      <span id="step-desc-text">Select an example to begin</span>
+    </div>
+    <div class="desc-right">
+      <button id="btn-detail-toggle" class="detail-toggle" title="Toggle details">▸ Details</button>
+    </div>
+  </div>
+  <div id="step-detail" class="step-detail collapsed">
+    <p id="step-detail-text"></p>
+  </div>
+
+  <!-- Main Content — left/right split -->
+  <main id="main-content">
+
+    <!-- Left: Architecture Visualization -->
+    <section id="arch-section">
+      <div class="section-header">
+        <h2>Cluster Architecture</h2>
+        <div class="legend">
+          <span class="legend-item"><span class="swatch" data-color="data"></span>Data</span>
+          <span class="legend-item"><span class="swatch" data-color="control"></span>Control</span>
+          <span class="legend-item"><span class="swatch" data-color="notification"></span>Notification</span>
+          <span class="legend-item"><span class="swatch" data-color="stateful"></span>Stateful</span>
+        </div>
+      </div>
+      <div id="arch-container">
+        <svg id="arch-svg" viewBox="0 0 1200 420" preserveAspectRatio="xMidYMid meet">
+          <defs>
+            <marker id="arrowhead-data" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#2196F3"/>
+            </marker>
+            <marker id="arrowhead-control" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#FF9800"/>
+            </marker>
+            <marker id="arrowhead-notification" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#4CAF50"/>
+            </marker>
+            <marker id="arrowhead-stateful" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto" markerUnits="strokeWidth">
+              <polygon points="0 0, 10 3.5, 0 7" fill="#F44336"/>
+            </marker>
+            <filter id="glow-active" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="4" result="blur"/>
+              <feFlood flood-color="#7c4dff" flood-opacity="0.6" result="color"/>
+              <feComposite in="color" in2="blur" operator="in" result="shadow"/>
+              <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <filter id="glow-new" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="4" result="blur"/>
+              <feFlood flood-color="#4CAF50" flood-opacity="0.6" result="color"/>
+              <feComposite in="color" in2="blur" operator="in" result="shadow"/>
+              <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+            <filter id="glow-modified" x="-30%" y="-30%" width="160%" height="160%">
+              <feGaussianBlur stdDeviation="4" result="blur"/>
+              <feFlood flood-color="#FFC107" flood-opacity="0.6" result="color"/>
+              <feComposite in="color" in2="blur" operator="in" result="shadow"/>
+              <feMerge><feMergeNode in="shadow"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+        </svg>
+      </div>
+    </section>
+
+    <!-- Right column: Event Log (top) + Task Graph (bottom) -->
+    <div id="right-column">
+
+      <!-- Event Log -->
+      <section id="event-log-section">
+        <h2>Event Log</h2>
+        <div id="event-log">
+          <div class="log-empty">No events yet</div>
+        </div>
+      </section>
+
+      <!-- Task Graph -->
+      <section id="task-graph-section">
+        <div class="section-header">
+          <h2>Task Graph</h2>
+          <div class="legend">
+            <span class="legend-item"><span class="node-swatch data-swatch"></span>Data</span>
+            <span class="legend-item"><span class="node-swatch task-swatch"></span>Task</span>
+            <span class="legend-item"><span class="node-swatch actor-swatch"></span>Actor</span>
+          </div>
+        </div>
+        <div id="task-graph-container">
+          <svg id="task-graph-svg" preserveAspectRatio="xMidYMid meet"></svg>
+        </div>
+      </section>
+
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
