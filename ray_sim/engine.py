@@ -402,8 +402,10 @@ class ExecutionEngine:
                    f"It requires {op.resources} and returns {op.num_returns} object(s).",
             source="driver",
             target="GCS",
-            highlights=[HighlightHint("GCS_function_table", "new")],
-            arrows=[ArrowHint("N1_driver", "GCS", f"register {op.function_name}()", "control", "dashed")],
+            highlights=[HighlightHint("GCS_function_table", "new")] +
+                      [HighlightHint(f"{nid}_worker", "active") for nid in node_list],
+            arrows=[ArrowHint("N1_driver", "GCS", f"register {op.function_name}()", "control", "dashed")] +
+                   [ArrowHint("GCS", f"{nid}_worker", f"push {op.function_name}()", "control", "dashed") for nid in node_list],
         )
         self._record_step(event)
     
@@ -460,7 +462,8 @@ class ExecutionEngine:
             source=f"{op.node}_driver",
             target=f"{op.node}_object_store",
             highlights=[HighlightHint(f"{op.node}_object_store", "new"), HighlightHint("GCS_object_table", "new")],
-            arrows=[ArrowHint(f"{op.node}_driver", f"{op.node}_object_store", f"put({op.value})", "data")],
+            arrows=[ArrowHint(f"{op.node}_driver", f"{op.node}_object_store", f"put({op.value})", "data"),
+                    ArrowHint(f"{op.node}_object_store", "GCS", f"register {op.object_id}@{op.node}", "control", "dashed")],
             new_graph_nodes=[TaskGraphNode(op.object_id, "data", str(op.value), "completed")],
             data_changes={"gcs_object_table_add": {op.object_id: {"location": op.node, "size": 100}}},
         )
@@ -611,12 +614,25 @@ class ExecutionEngine:
         if missing_args:
             # Replicate all missing args
             replication_info = []
+            source_nodes_for_args = {}
             for arg_id in missing_args:
                 loc_info = self.gcs.get_object_location(arg_id)
                 source_node_id = loc_info["location"] if loc_info else op.calling_node
                 value = self.nodes[source_node_id].object_store.get(arg_id)
                 target_node.object_store.put(arg_id, value)
                 replication_info.append(f"{arg_id} from {source_node_id}")
+                source_nodes_for_args[arg_id] = source_node_id
+            
+            # Build arrows: GCS lookup + data replication (grouped by source node)
+            fetch_arrows = [ArrowHint(f"{selected_node}_object_store", "GCS",
+                                       f"lookup {missing_args}", "control", "dashed")]
+            # Group args by source node for deduplication
+            src_groups = {}
+            for arg_id, src_node in source_nodes_for_args.items():
+                src_groups.setdefault(src_node, []).append(arg_id)
+            for src_node, arg_ids in src_groups.items():
+                fetch_arrows.append(ArrowHint(f"{src_node}_object_store", f"{selected_node}_object_store",
+                                               f"replicate {', '.join(arg_ids)}", "data"))
             
             event = StepEvent(
                 phase=StepPhase.DATA_FETCH,
@@ -626,9 +642,9 @@ class ExecutionEngine:
                        f"Objects are replicated via point-to-point transfer for shared memory access.",
                 source=f"{selected_node}_object_store",
                 target=f"{selected_node}_object_store",
-                highlights=[HighlightHint(f"{selected_node}_object_store", "new")],
-                arrows=[ArrowHint("GCS", f"{selected_node}_object_store",
-                                  f"lookup & replicate {missing_args}", "data")] if missing_args else [],
+                highlights=[HighlightHint(f"{selected_node}_object_store", "new"),
+                           HighlightHint("GCS_object_table", "active")],
+                arrows=fetch_arrows,
             )
             self._record_step(event)
         
@@ -666,7 +682,9 @@ class ExecutionEngine:
             arrows=[ArrowHint(f"{selected_node}_local_scheduler", f"{selected_node}_worker",
                               f"dispatch {task_id}", "control"),
                     ArrowHint(f"{selected_node}_worker", f"{selected_node}_object_store",
-                              f"write {result_ids}", "data")],
+                              f"write {result_ids}", "data"),
+                    ArrowHint(f"{selected_node}_object_store", "GCS",
+                              f"register {result_ids}", "control", "dashed")],
             new_graph_nodes=[TaskGraphNode(rid, "data", f"result", "completed") for rid in result_ids],
             new_graph_edges=[TaskGraphEdge(task_id, rid, EdgeType.DATA) for rid in result_ids],
             data_changes={"gcs_object_table_add": {rid: {"location": selected_node, "size": 100} for rid in result_ids}},
@@ -733,7 +751,9 @@ class ExecutionEngine:
             target=f"{target_node_id}_actor",
             highlights=[HighlightHint(f"{target_node_id}_actor", "new"), HighlightHint("GCS_actor_table", "new")],
             arrows=[ArrowHint(f"{op.calling_node}_driver", f"{target_node_id}_actor",
-                              f"create {actor_id}", "control")],
+                              f"create {actor_id}", "control"),
+                    ArrowHint(f"{target_node_id}_actor", "GCS",
+                              f"register {actor_id}", "control", "dashed")],
             new_graph_nodes=[TaskGraphNode(actor_id, "actor_method", f"{op.class_name}", "completed")],
         )
         self._record_step(event)
@@ -860,7 +880,9 @@ class ExecutionEngine:
                        HighlightHint(f"{target_node_id}_object_store", "new"),
                        HighlightHint("GCS_object_table", "new")],
             arrows=[ArrowHint(f"{target_node_id}_actor", f"{target_node_id}_object_store",
-                              f"write {result_ids}", "data")],
+                              f"write {result_ids}", "data"),
+                    ArrowHint(f"{target_node_id}_object_store", "GCS",
+                              f"register {result_ids}@{target_node_id}", "control", "dashed")],
             new_graph_nodes=[TaskGraphNode(rid, "data", f"result", "completed") for rid in result_ids],
             new_graph_edges=[TaskGraphEdge(task_id, rid, EdgeType.DATA) for rid in result_ids],
         )
@@ -906,8 +928,11 @@ class ExecutionEngine:
                            f"Replicated and returned. Value: {value}",
                     source=f"{source_node_id}_object_store",
                     target=f"{op.calling_node}_object_store",
-                    highlights=[HighlightHint(f"{op.calling_node}_object_store", "new")],
-                    arrows=[ArrowHint(f"{source_node_id}_object_store", f"{op.calling_node}_object_store",
+                    highlights=[HighlightHint(f"{op.calling_node}_object_store", "new"),
+                               HighlightHint("GCS_object_table", "active")],
+                    arrows=[ArrowHint(f"{op.calling_node}_object_store", "GCS",
+                                      f"lookup {op.object_id}", "control", "dashed"),
+                            ArrowHint(f"{source_node_id}_object_store", f"{op.calling_node}_object_store",
                                       f"replicate {op.object_id}", "data")],
                 )
                 self._record_step(event)
@@ -921,6 +946,8 @@ class ExecutionEngine:
                     source=f"{op.calling_node}_object_store",
                     target="GCS",
                     highlights=[HighlightHint("GCS_object_table", "active")],
+                    arrows=[ArrowHint(f"{op.calling_node}_object_store", "GCS",
+                                      f"subscribe({op.object_id})", "control", "dashed")],
                 )
                 self._record_step(event)
                 
