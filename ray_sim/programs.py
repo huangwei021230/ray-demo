@@ -34,6 +34,10 @@ def create_add_example() -> RayProgram:
         ),
         num_nodes=2,
         node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)"},
+        node_resources={
+            "N1": {"CPU": 4, "GPU": 0},
+            "N2": {"CPU": 4, "GPU": 0},
+        },
         operations=[
             # Step 0: Register function
             RegisterFunction(
@@ -77,7 +81,12 @@ def create_rl_example() -> RayProgram:
             "nested remote calls, and the dynamic task graph computation model."
         ),
         num_nodes=3,
-        node_labels={"N1": "N1 (Driver)", "N2": "N2 (GPU)", "N3": "N3 (GPU)"},
+        node_labels={"N1": "N1 (Driver)", "N2": "N2 (GPU×2)", "N3": "N3 (GPU×1)"},
+        node_resources={
+            "N1": {"CPU": 4, "GPU": 0},
+            "N2": {"CPU": 4, "GPU": 2},
+            "N3": {"CPU": 4, "GPU": 1},
+        },
         operations=[
             # Register functions and actor classes
             RegisterFunction(
@@ -88,12 +97,12 @@ def create_rl_example() -> RayProgram:
             RegisterFunction(
                 function_name="update_policy",
                 num_returns=1,
-                resources={"CPU": 1, "GPU": 1},
+                resources={"CPU": 1, "GPU": 2},
             ),
             RegisterActorClass(
                 class_name="Simulator",
                 methods=["rollout"],
-                resources={"CPU": 1},
+                resources={"CPU": 1, "GPU": 1},
             ),
             RegisterFunction(
                 function_name="train_policy",
@@ -179,6 +188,10 @@ def create_simple_local_example() -> RayProgram:
         ),
         num_nodes=2,
         node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)"},
+        node_resources={
+            "N1": {"CPU": 4, "GPU": 0},
+            "N2": {"CPU": 4, "GPU": 0},
+        },
         operations=[
             RegisterFunction(
                 function_name="double",
@@ -211,7 +224,12 @@ def create_chained_tasks_example() -> RayProgram:
             "Tasks are: load_data → preprocess → train → evaluate."
         ),
         num_nodes=3,
-        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)", "N3": "N3 (Worker)"},
+        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker+)", "N3": "N3 (Worker)"},
+        node_resources={
+            "N1": {"CPU": 4, "GPU": 0},
+            "N2": {"CPU": 4, "GPU": 1},
+            "N3": {"CPU": 4, "GPU": 2},
+        },
         operations=[
             RegisterFunction(
                 function_name="load_data", num_returns=1, resources={"CPU": 1}

@@ -322,16 +322,21 @@ class ExecutionEngine:
         self._actor_counter += 1
         return aid
     
-    def initialize_cluster(self, num_nodes: int, node_labels: Optional[Dict[NodeID, str]] = None):
+    def initialize_cluster(self, num_nodes: int, node_labels: Optional[Dict[NodeID, str]] = None,
+                           node_resources: Optional[Dict[NodeID, Dict[str, float]]] = None,
+                           driver_node: Optional[NodeID] = None):
         """Initialize the Ray cluster with the given number of nodes."""
         self.nodes.clear()
         for i in range(num_nodes):
             nid = f"N{i+1}"
-            is_driver = (i == 0)  # First node has the driver
-            resources = {"CPU": 4, "GPU": 0}
-            # Give GPUs to some nodes for RL example
-            if i >= 1:
-                resources["GPU"] = 1
+            is_driver = (nid == (driver_node or "N1"))
+            # Use per-node resources if specified, otherwise defaults
+            if node_resources and nid in node_resources:
+                resources = dict(node_resources[nid])
+            else:
+                resources = {"CPU": 4, "GPU": 0}
+                if i >= 1:
+                    resources["GPU"] = 1
             self.nodes[nid] = Node(nid, is_driver=is_driver, resources=resources)
             self.global_scheduler.update_node_load(nid, 0, resources)
         
@@ -1100,7 +1105,8 @@ class ExecutionEngine:
         self._graph_nodes.clear()
         self._graph_edges.clear()
         
-        self.initialize_cluster(program.num_nodes, program.node_labels)
+        self.initialize_cluster(program.num_nodes, program.node_labels,
+                               program.node_resources, program.driver_node)
         
         # Execute each operation
         for op in program.operations:

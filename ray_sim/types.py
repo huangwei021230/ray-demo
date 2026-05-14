@@ -276,3 +276,5 @@ class RayProgram:
     num_nodes: int = 2
     operations: List[ProgramOp] = field(default_factory=list)
     node_labels: Dict[NodeID, str] = field(default_factory=dict)
+    node_resources: Dict[NodeID, Dict[str, float]] = field(default_factory=dict)
+    driver_node: Optional[NodeID] = None  # defaults to N1 if not set
