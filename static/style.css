@@ -577,34 +577,34 @@ body {
 .arch-title {
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 16px;
+  font-size: 20px;
   fill: var(--text);
 }
 
 .arch-subtitle {
   font-family: var(--font-mono);
   font-weight: 500;
-  font-size: 12px;
+  font-size: 15px;
   fill: var(--text-secondary);
 }
 
 .arch-label {
   font-family: var(--font-mono);
   font-weight: 500;
-  font-size: 12px;
+  font-size: 15px;
   fill: var(--text-secondary);
 }
 
 .arch-value {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 14px;
   fill: var(--text);
 }
 
 .arch-section-header {
   font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 11px;
+  font-size: 14px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   fill: var(--text-secondary);
@@ -684,7 +684,7 @@ body {
 
 .arrow-label {
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 14px;
   font-weight: 600;
   fill: var(--text);
   pointer-events: none;
@@ -737,7 +737,7 @@ body {
 
 .tg-label {
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   font-weight: 600;
   fill: white;
   text-anchor: middle;
@@ -747,7 +747,7 @@ body {
 
 .tg-sublabel {
   font-family: var(--font-mono);
-  font-size: 8px;
+  font-size: 10px;
   fill: var(--text-secondary);
   text-anchor: middle;
   dominant-baseline: central;
