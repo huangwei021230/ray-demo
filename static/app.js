@@ -331,7 +331,7 @@ class RayDemo {
     if (!this._measureSpan) {
       this._measureSpan = document.createElement("span");
       this._measureSpan.style.fontFamily = "'IBM Plex Mono', monospace";
-      this._measureSpan.style.fontSize = "7px";
+      this._measureSpan.style.fontSize = "10px";
       this._measureSpan.style.fontWeight = "600";
       this._measureSpan.style.position = "absolute";
       this._measureSpan.style.visibility = "hidden";
@@ -365,7 +365,7 @@ class RayDemo {
       svg.setAttribute("viewBox", "0 0 1000 200");
       svg.appendChild(this.svgText("Load an example to visualize the Ray cluster", 500, 100, {
         "text-anchor": "middle", fill: "#9ca3af",
-        "font-family": "IBM Plex Sans", "font-size": "16"
+        "font-family": "IBM Plex Sans", "font-size": "18"
       }));
       return;
     }
@@ -382,10 +382,10 @@ class RayDemo {
     const gcsX = 15, gcsY = 8, gcsW = 320;
     const gcsInnerPad = 8;
     const gcsTableH = this._calcGCSTableHeight(gcs, GCS_MAX_ROWS);
-    const gcsH = 38 + gcsTableH;
+    const gcsH = 54 + gcsTableH;
 
     // Global Scheduler layout
-    const gsW = 220, gsH = 50;
+    const gsW = 220, gsH = 64;
     const gsX = Math.min(430, gcsX + gcsW + 30);
     const gsY = 14;
 
@@ -425,24 +425,24 @@ class RayDemo {
       const key = tableKeys[ti];
       const n = gcs[key] ? Object.keys(gcs[key]).length : 0;
       const capped = Math.min(n, maxRows);
-      h += 14 + Math.max(capped, 1) * 12 + 4 + 4;
+      h += 17 + Math.max(capped, 1) * 14 + 4 + 4;
     }
     return h;
   }
 
   _calcNodeHeight(node, w) {
     const px = 6;
-    let cy = px + 12 + 10 + 6;
-    if (node.is_driver) cy += 20;
+    let cy = px + 14 + 10 + 6;
+    if (node.is_driver) cy += 22;
     const workers = node.workers || [];
-    cy += 12 + Math.max(workers.length, 0) * 11 + 2 + 3;
-    cy += 22 + 3;
+    cy += 14 + Math.max(workers.length, 0) * 14 + 2 + 3;
+    cy += 28 + 3;
     const objs = node.object_store ? Object.entries(node.object_store) : [];
     const maxShow = Math.min(objs.length, 10);
     const show = Math.max(1, Math.min(objs.length, maxShow));
-    cy += 14 + show * 13 + 4 + 3;
+    cy += 17 + show * 16 + 4 + 3;
     const actors = node.actors || [];
-    if (actors.length > 0) cy += 14 + actors.length * 13 + 4 + 3;
+    if (actors.length > 0) cy += 17 + actors.length * 16 + 4 + 3;
     return cy;
   }
 
@@ -456,15 +456,15 @@ class RayDemo {
     }));
     g.appendChild(this.svgEl("rect", { x: x, y: y, width: w, height: h, class: "arch-box-gcs" }));
 
-    g.appendChild(this.svgText("GCS", x + pad + 4, y + 16, { class: "arch-title", "font-size": "11" }));
-    g.appendChild(this.svgText("Global Control Store", x + pad + 4, y + 28, {
+    g.appendChild(this.svgText("GCS", x + pad + 4, y + 22, { class: "arch-title", "font-size": "11" }));
+    g.appendChild(this.svgText("Global Control Store", x + pad + 4, y + 38, {
       class: "arch-subtitle", "font-size": "8", fill: "#546e7a"
     }));
     g.appendChild(this.svgEl("line", {
-      x1: x + pad, y1: y + 34, x2: x + w - pad, y2: y + 34, class: "arch-divider"
+      x1: x + pad, y1: y + 46, x2: x + w - pad, y2: y + 46, class: "arch-divider"
     }));
 
-    var ty = y + 40;
+    var ty = y + 54;
     var tables = [
       { key: "object_table", label: "Object Table", id: "GCS_object_table",
         fmt: function(k, v) { return k + " \u2192 " + v.location + " (" + v.size + "B)"; } },
@@ -479,9 +479,9 @@ class RayDemo {
     for (var ti = 0; ti < tables.length; ti++) {
       var t = tables[ti];
       var entries = gcs[t.key] ? Object.entries(gcs[t.key]) : [];
-      var rowH = 12;
+      var rowH = 14;
       var displayRows = Math.min(entries.length, maxRows);
-      var th = 14 + Math.max(displayRows, 1) * rowH + 4;
+      var th = 17 + Math.max(displayRows, 1) * rowH + 4;
 
       var tg = this.svgEl("g", { id: t.id });
       this.componentPositions[t.id] = { x: x + pad, y: ty, width: w - pad * 2, height: th };
@@ -490,21 +490,21 @@ class RayDemo {
         x: x + pad, y: ty, width: w - pad * 2, height: th,
         fill: "#ffffff", stroke: "#e0e0e0", "stroke-width": "0.5", rx: "3", ry: "3"
       }));
-      tg.appendChild(this.svgText(t.label, x + pad + 4, ty + 10, { class: "arch-section-header" }));
+      tg.appendChild(this.svgText(t.label, x + pad + 4, ty + 12, { class: "arch-section-header" }));
 
       if (entries.length === 0) {
-        tg.appendChild(this.svgText("(empty)", x + pad + 4, ty + 22, {
+        tg.appendChild(this.svgText("(empty)", x + pad + 4, ty + 26, {
           class: "arch-value", fill: "#b0b0b0", "font-style": "italic"
         }));
       } else {
         for (var ei = 0; ei < displayRows; ei++) {
           var entry = entries[ei];
-          tg.appendChild(this.svgText(t.fmt(entry[0], entry[1]), x + pad + 10, ty + 22 + ei * rowH, {
+          tg.appendChild(this.svgText(t.fmt(entry[0], entry[1]), x + pad + 10, ty + 26 + ei * rowH, {
             class: "arch-value"
           }));
         }
         if (entries.length > displayRows) {
-          tg.appendChild(this.svgText("\u2026 +" + (entries.length - displayRows) + " more", x + pad + 6, ty + 22 + displayRows * rowH, {
+          tg.appendChild(this.svgText("\u2026 +" + (entries.length - displayRows) + " more", x + pad + 6, ty + 26 + displayRows * rowH, {
             class: "arch-value", fill: "#9ca3af", "font-style": "italic"
           }));
         }
@@ -526,19 +526,19 @@ class RayDemo {
     }));
     g.appendChild(this.svgEl("rect", { x: x, y: y, width: w, height: h, class: "arch-box-scheduler" }));
 
-    g.appendChild(this.svgText("Global Scheduler", x + 10, y + 18, {
+    g.appendChild(this.svgText("Global Scheduler", x + 10, y + 22, {
       class: "arch-title", "font-size": "11"
     }));
 
     var qLen = queue ? queue.length : 0;
     if (qLen > 0) {
-      g.appendChild(this.svgText("Queue: " + qLen + " task" + (qLen > 1 ? "s" : ""), x + 10, y + 34, {
+      g.appendChild(this.svgText("Queue: " + qLen + " task" + (qLen > 1 ? "s" : ""), x + 10, y + 42, {
         class: "arch-subtitle", "font-size": "10"
       }));
       var preview = queue.slice(0, 10).join(", ") + (qLen > 10 ? "\u2026" : "");
-      g.appendChild(this.svgText(preview, x + 10, y + 46, { class: "arch-value" }));
+      g.appendChild(this.svgText(preview, x + 10, y + 56, { class: "arch-value" }));
     } else {
-      g.appendChild(this.svgText("Queue: empty", x + 10, y + 34, {
+      g.appendChild(this.svgText("Queue: empty", x + 10, y + 42, {
         class: "arch-subtitle", "font-size": "10"
       }));
     }
@@ -561,7 +561,7 @@ class RayDemo {
     g.appendChild(this.svgEl("rect", { x: x, y: y, width: w, height: h, class: boxClass }));
 
     var px = 6;
-    var cy = y + px + 12;
+    var cy = y + px + 14;
 
     g.appendChild(this.svgText(nid, x + px + 2, cy, { class: "arch-title", "font-size": "11" }));
     var roleText = isDriver ? "\u2605 Driver" : "Worker";
@@ -590,7 +590,7 @@ class RayDemo {
     // Workers
     var workers = node.workers || [];
     var workerTasks = node.worker_tasks || {};
-    var wH = 12 + Math.max(workers.length, 0) * 11 + 2;
+    var wH = 14 + Math.max(workers.length, 0) * 14 + 2;
     var wg = this.svgEl("g", { id: nid + "_worker" });
     this.componentPositions[nid + "_worker"] = { x: x + px, y: cy, width: w - px * 2, height: wH };
 
@@ -602,7 +602,7 @@ class RayDemo {
       var wTask = workerTasks[workers[wi]];
       var wLabel = wShort + (wTask ? " [" + wTask + "]" : " [idle]");
       var wColor = wTask ? "#e65100" : "#6b7280";
-      wg.appendChild(this.svgText(wLabel, x + px + 12, cy + 22 + wi * 11, {
+      wg.appendChild(this.svgText(wLabel, x + px + 12, cy + 24 + wi * 14, {
         class: "arch-value", "font-size": "7.5", fill: wColor
       }));
     }
@@ -611,7 +611,7 @@ class RayDemo {
 
     // Local Scheduler
     var lsQueue = node.local_queue || [];
-    var lsH = 22;
+    var lsH = 28;
     var lsg = this.svgEl("g", { id: nid + "_local_scheduler" });
     this.componentPositions[nid + "_local_scheduler"] = { x: x + px, y: cy, width: w - px * 2, height: lsH };
 
@@ -619,15 +619,15 @@ class RayDemo {
       x: x + px, y: cy, width: w - px * 2, height: lsH,
       fill: "#f5f5f5", stroke: "#e0e0e0", "stroke-width": "0.5", rx: "3", ry: "3"
     }));
-    lsg.appendChild(this.svgText("Local Scheduler", x + px + 4, cy + 11, {
+    lsg.appendChild(this.svgText("Local Scheduler", x + px + 4, cy + 13, {
       class: "arch-section-header", "font-size": "8"
     }));
-    lsg.appendChild(this.svgText("queue: " + lsQueue.length, x + px + 4, cy + 22, {
+    lsg.appendChild(this.svgText("queue: " + lsQueue.length, x + px + 4, cy + 26, {
       class: "arch-value", "font-size": "8"
     }));
     if (lsQueue.length > 0) {
       var lsPreview = lsQueue.slice(0, 10).join(", ") + (lsQueue.length > 10 ? "\u2026" : "");
-      lsg.appendChild(this.svgText(lsPreview, x + px + 70, cy + 22, {
+      lsg.appendChild(this.svgText(lsPreview, x + px + 90, cy + 26, {
         class: "arch-value", "font-size": "7.5", fill: "#6b7280"
       }));
     }
@@ -636,27 +636,27 @@ class RayDemo {
 
     // Object Store
     var objs = node.object_store ? Object.entries(node.object_store) : [];
-    var maxShow = Math.max(1, Math.floor((y + h - cy - 20) / 13));
+    var maxShow = Math.max(1, Math.floor((y + h - cy - 24) / 16));
     var show = Math.max(1, Math.min(objs.length, maxShow));
-    var oH = 14 + show * 13 + 4;
+    var oH = 17 + show * 16 + 4;
     var og = this.svgEl("g", { id: nid + "_object_store" });
     this.componentPositions[nid + "_object_store"] = { x: x + px, y: cy, width: w - px * 2, height: oH };
 
-    og.appendChild(this.svgText("Object Store (" + objs.length + ")", x + px + 4, cy + 10, {
+    og.appendChild(this.svgText("Object Store (" + objs.length + ")", x + px + 4, cy + 12, {
       class: "arch-section-header", "font-size": "8"
     }));
     if (objs.length === 0) {
-      og.appendChild(this.svgText("(empty)", x + px + 12, cy + 23, {
+      og.appendChild(this.svgText("(empty)", x + px + 12, cy + 25, {
         class: "arch-value", "font-size": "7.5", fill: "#b0b0b0", "font-style": "italic"
       }));
     } else {
       for (var oi = 0; oi < show; oi++) {
-        og.appendChild(this.svgText(objs[oi][0] + ": " + objs[oi][1], x + px + 12, cy + 23 + oi * 13, {
+        og.appendChild(this.svgText(objs[oi][0] + ": " + objs[oi][1], x + px + 12, cy + 25 + oi * 16, {
           class: "arch-value", "font-size": "7.5"
         }));
       }
       if (objs.length > show) {
-        og.appendChild(this.svgText("+" + (objs.length - show) + " more", x + px + 12, cy + 23 + show * 13, {
+        og.appendChild(this.svgText("+" + (objs.length - show) + " more", x + px + 12, cy + 25 + show * 16, {
           class: "arch-value", "font-size": "7.5", fill: "#9ca3af", "font-style": "italic"
         }));
       }
@@ -667,15 +667,15 @@ class RayDemo {
     // Actors
     var actors = node.actors || [];
     if (actors.length > 0) {
-      var aH = 14 + actors.length * 13 + 4;
+      var aH = 17 + actors.length * 16 + 4;
       var ag = this.svgEl("g", { id: nid + "_actor" });
       this.componentPositions[nid + "_actor"] = { x: x + px, y: cy, width: w - px * 2, height: aH };
 
-      ag.appendChild(this.svgText("Actors (" + actors.length + ")", x + px + 4, cy + 10, {
+      ag.appendChild(this.svgText("Actors (" + actors.length + ")", x + px + 4, cy + 12, {
         class: "arch-section-header", "font-size": "8"
       }));
       for (var ai = 0; ai < actors.length; ai++) {
-        ag.appendChild(this.svgText(actors[ai], x + px + 12, cy + 23 + ai * 13, {
+        ag.appendChild(this.svgText(actors[ai], x + px + 12, cy + 25 + ai * 16, {
           class: "arch-value", "font-size": "7.5"
         }));
       }
@@ -951,7 +951,7 @@ class RayDemo {
       svg.setAttribute("viewBox", "0 0 300 50");
       svg.appendChild(this.svgText("Task graph will appear here", 150, 25, {
         "text-anchor": "middle", fill: "#9ca3af",
-        "font-family": "IBM Plex Sans", "font-size": "10"
+        "font-family": "IBM Plex Sans", "font-size": "13"
       }));
       return;
     }

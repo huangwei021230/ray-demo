@@ -37,7 +37,7 @@
 /* ===== Reset & Base ===== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-html { font-size: 13px; -webkit-font-smoothing: antialiased; }
+html {     font-size: 16px; -webkit-font-smoothing: antialiased; }
 
 body {
   font-family: var(--font-body);
@@ -577,34 +577,34 @@ body {
 .arch-title {
   font-family: var(--font-display);
   font-weight: 700;
-  font-size: 12px;
+  font-size: 16px;
   fill: var(--text);
 }
 
 .arch-subtitle {
   font-family: var(--font-mono);
   font-weight: 500;
-  font-size: 9px;
+  font-size: 12px;
   fill: var(--text-secondary);
 }
 
 .arch-label {
   font-family: var(--font-mono);
   font-weight: 500;
-  font-size: 9px;
+  font-size: 12px;
   fill: var(--text-secondary);
 }
 
 .arch-value {
   font-family: var(--font-mono);
-  font-size: 8.5px;
+  font-size: 11px;
   fill: var(--text);
 }
 
 .arch-section-header {
   font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 8px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   fill: var(--text-secondary);
@@ -684,7 +684,7 @@ body {
 
 .arrow-label {
   font-family: var(--font-mono);
-  font-size: 8px;
+  font-size: 11px;
   font-weight: 600;
   fill: var(--text);
   pointer-events: none;
@@ -737,7 +737,7 @@ body {
 
 .tg-label {
   font-family: var(--font-mono);
-  font-size: 7px;
+  font-size: 10px;
   font-weight: 600;
   fill: white;
   text-anchor: middle;
@@ -747,7 +747,7 @@ body {
 
 .tg-sublabel {
   font-family: var(--font-mono);
-  font-size: 6px;
+  font-size: 8px;
   fill: var(--text-secondary);
   text-anchor: middle;
   dominant-baseline: central;
