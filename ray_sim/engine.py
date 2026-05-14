@@ -235,6 +235,10 @@ class GlobalScheduler:
     
     def enqueue(self, task_id: TaskID):
         self.pending_tasks.append(task_id)
+    
+    def dequeue(self, task_id: TaskID):
+        if task_id in self.pending_tasks:
+            self.pending_tasks.remove(task_id)
 
 
 class Node:
@@ -584,12 +588,23 @@ class ExecutionEngine:
             )
             self._record_step(event)
             
+            # Task has been assigned: dequeue from global, enqueue into target node's local scheduler
+            self.global_scheduler.dequeue(task_id)
+            target_node = self.nodes[selected_node]
+            target_node.local_scheduler.enqueue(task_id)
+            self.global_scheduler.update_node_load(
+                selected_node, len(target_node.local_scheduler.task_queue),
+                target_node.local_scheduler.available_resources)
+            
         else:
             # Schedule locally
             task_info.assigned_node = op.calling_node
             task_info.status = TaskStatus.SCHEDULED
             self.gcs.update_task_status(task_id, "scheduled", op.calling_node)
             calling_node.local_scheduler.enqueue(task_id)
+            self.global_scheduler.update_node_load(
+                op.calling_node, len(calling_node.local_scheduler.task_queue),
+                calling_node.local_scheduler.available_resources)
             
             event = StepEvent(
                 phase=StepPhase.LOCAL_SCHEDULE,
@@ -648,7 +663,12 @@ class ExecutionEngine:
             )
             self._record_step(event)
         
-        # ---- Step 4: Worker executes task, stores results & registers in GCS ----
+        # ---- Step 4: Local scheduler dispatches task to worker, then worker executes ----
+        target_node.local_scheduler.dequeue()
+        self.global_scheduler.update_node_load(
+            selected_node, len(target_node.local_scheduler.task_queue),
+            target_node.local_scheduler.available_resources)
+        
         worker_id = target_node.workers[0] if target_node.workers else f"{selected_node}_worker_0"
         task_info.status = TaskStatus.RUNNING
         task_info.worker_id = worker_id
@@ -815,6 +835,12 @@ class ExecutionEngine:
         
         target_node = self.nodes[target_node_id]
         
+        # Enqueue into target node's local scheduler
+        target_node.local_scheduler.enqueue(task_id)
+        self.global_scheduler.update_node_load(
+            target_node_id, len(target_node.local_scheduler.task_queue),
+            target_node.local_scheduler.available_resources)
+        
         # Fetch missing args
         missing_args = [arg_id for arg_id in op.args if not target_node.object_store.has(arg_id)]
         for arg_id in missing_args:
@@ -850,7 +876,12 @@ class ExecutionEngine:
         )
         self._record_step(event)
         
-        # Step 2: Execute method + register results
+        # Step 2: Local scheduler dispatches to actor, then execute + register results
+        target_node.local_scheduler.dequeue()
+        self.global_scheduler.update_node_load(
+            target_node_id, len(target_node.local_scheduler.task_queue),
+            target_node.local_scheduler.available_resources)
+        
         result_values = self._simulate_function_execution(
             f"{op.actor_id}.{op.method_name}", op.args
         )
