@@ -11,7 +11,7 @@ from .types import *
 
 def create_add_example() -> RayProgram:
     """Create the add(a, b) example from the paper's Figure 5.
-    
+
     This is the paper's primary walkthrough example showing the
     complete end-to-end flow of a remote function call:
     - Function registration
@@ -32,8 +32,8 @@ def create_add_example() -> RayProgram:
             "worker execution → result registration → ray.get(). "
             "Matches Figure 5 in the paper."
         ),
-        num_nodes=3,
-        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)", "N3": "N3 (Worker)"},
+        num_nodes=2,
+        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)"},
         operations=[
             # Step 0: Register function
             RegisterFunction(
@@ -58,13 +58,13 @@ def create_add_example() -> RayProgram:
 
 def create_rl_example() -> RayProgram:
     """Create the RL training example from the paper's Figure 2.
-    
+
     This matches the Python code in the paper's Figure 1:
     - @ray.remote def create_policy()
     - @ray.remote(num_gpus=1) class Simulator with rollout method
     - @ray.remote(num_gpus=2) def update_policy(policy, *rollouts)
     - @ray.remote def train_policy()
-    
+
     Shows: actors, stateful edges, nested remote calls, dynamic task graph.
     We model one iteration of the training loop with 2 simulators.
     """
@@ -100,7 +100,6 @@ def create_rl_example() -> RayProgram:
                 num_returns=1,
                 resources={"CPU": 1},
             ),
-            
             # train_policy() body:
             # 1. Create policy
             RemoteCallOp(
@@ -110,7 +109,6 @@ def create_rl_example() -> RayProgram:
                 calling_task=None,
             ),
             # policy_id is obj_0
-            
             # 2. Create simulator actors
             ActorCreateOp(
                 class_name="Simulator",
@@ -122,7 +120,6 @@ def create_rl_example() -> RayProgram:
                 actor_id="sim2",
                 calling_node="N1",
             ),
-            
             # 3. Run rollouts on each actor (parallel) — iteration 1
             ActorMethodCallOp(
                 actor_id="sim1",
@@ -136,7 +133,6 @@ def create_rl_example() -> RayProgram:
                 args=["obj_0"],  # policy
                 calling_node="N1",
             ),
-            
             # 3b. Run rollouts on each actor — iteration 2
             # This creates STATEFUL EDGES: sim1.rollout[2] depends on sim1.rollout[1]
             ActorMethodCallOp(
@@ -151,7 +147,6 @@ def create_rl_example() -> RayProgram:
                 args=["obj_0"],  # same policy
                 calling_node="N1",
             ),
-            
             # 4. Update policy with rollout results
             # obj_0 from create_policy, obj_2 from sim1.rollout[1], obj_3 from sim2.rollout[1]
             # obj_4 from sim1.rollout[2], obj_5 from sim2.rollout[2]
@@ -160,7 +155,6 @@ def create_rl_example() -> RayProgram:
                 args=["obj_0", "obj_2", "obj_3", "obj_4", "obj_5"],
                 calling_node="N1",
             ),
-            
             # 5. Get the final result
             GetOp(object_id="obj_6", calling_node="N1"),
         ],
@@ -169,7 +163,7 @@ def create_rl_example() -> RayProgram:
 
 def create_simple_local_example() -> RayProgram:
     """Simple example where task is scheduled locally.
-    
+
     Shows the bottom-up scheduler's common case: local scheduling.
     The driver puts data and calls a function, and the local scheduler
     handles it without involving the global scheduler.
@@ -204,7 +198,7 @@ def create_simple_local_example() -> RayProgram:
 
 def create_chained_tasks_example() -> RayProgram:
     """Example with chained tasks showing data edges and control edges.
-    
+
     Shows how futures flow through a pipeline of tasks, creating
     data edges (data dependencies) and control edges (nested calls).
     """
@@ -219,11 +213,18 @@ def create_chained_tasks_example() -> RayProgram:
         num_nodes=3,
         node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)", "N3": "N3 (Worker)"},
         operations=[
-            RegisterFunction(function_name="load_data", num_returns=1, resources={"CPU": 1}),
-            RegisterFunction(function_name="preprocess", num_returns=1, resources={"CPU": 1}),
-            RegisterFunction(function_name="train", num_returns=1, resources={"CPU": 1, "GPU": 1}),
-            RegisterFunction(function_name="evaluate", num_returns=1, resources={"CPU": 1}),
-            
+            RegisterFunction(
+                function_name="load_data", num_returns=1, resources={"CPU": 1}
+            ),
+            RegisterFunction(
+                function_name="preprocess", num_returns=1, resources={"CPU": 1}
+            ),
+            RegisterFunction(
+                function_name="train", num_returns=1, resources={"CPU": 1, "GPU": 1}
+            ),
+            RegisterFunction(
+                function_name="evaluate", num_returns=1, resources={"CPU": 1}
+            ),
             # Chain: load_data → preprocess → train → evaluate
             RemoteCallOp(function_name="load_data", args=[], calling_node="N1"),
             # obj_0 = loaded data
@@ -233,7 +234,6 @@ def create_chained_tasks_example() -> RayProgram:
             # obj_2 = trained model
             RemoteCallOp(function_name="evaluate", args=["obj_2"], calling_node="N1"),
             # obj_3 = evaluation result
-            
             GetOp(object_id="obj_3", calling_node="N1"),
         ],
     )

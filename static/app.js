@@ -327,6 +327,21 @@ class RayDemo {
     return el;
   }
 
+  _measureTextWidth(text) {
+    if (!this._measureSpan) {
+      this._measureSpan = document.createElement("span");
+      this._measureSpan.style.fontFamily = "'IBM Plex Mono', monospace";
+      this._measureSpan.style.fontSize = "7px";
+      this._measureSpan.style.fontWeight = "600";
+      this._measureSpan.style.position = "absolute";
+      this._measureSpan.style.visibility = "hidden";
+      this._measureSpan.style.whiteSpace = "pre";
+      document.body.appendChild(this._measureSpan);
+    }
+    this._measureSpan.textContent = text || "";
+    return this._measureSpan.offsetWidth;
+  }
+
   /* ================================================================
      ARCHITECTURE RENDERING
      ================================================================ */
@@ -347,7 +362,8 @@ class RayDemo {
     this.componentPositions = {};
 
     if (!data || !data.nodes || Object.keys(data.nodes).length === 0) {
-      svg.appendChild(this.svgText("Load an example to visualize the Ray cluster", 600, 290, {
+      svg.setAttribute("viewBox", "0 0 1000 200");
+      svg.appendChild(this.svgText("Load an example to visualize the Ray cluster", 500, 100, {
         "text-anchor": "middle", fill: "#9ca3af",
         "font-family": "IBM Plex Sans", "font-size": "16"
       }));
@@ -359,12 +375,13 @@ class RayDemo {
     const gcs = data.gcs || {};
     const globalQueue = data.global_scheduler_queue || [];
 
-    const W = 1200, H = 420;
+    const W = 1200;
+    const GCS_MAX_ROWS = 10;
 
     // GCS layout
     const gcsX = 15, gcsY = 8, gcsW = 320;
     const gcsInnerPad = 8;
-    const gcsTableH = this._calcGCSTableHeight(gcs);
+    const gcsTableH = this._calcGCSTableHeight(gcs, GCS_MAX_ROWS);
     const gcsH = 38 + gcsTableH;
 
     // Global Scheduler layout
@@ -378,32 +395,58 @@ class RayDemo {
     const maxNodeW = 280, minNodeW = 140;
     const nodeW = Math.max(minNodeW, Math.min(maxNodeW,
       (W - 30 - (numNodes - 1) * nodeGap) / numNodes));
-    const nodeH = Math.min(190, H - nodeTopY - 6);
+
+    let maxNodeH = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const nh = this._calcNodeHeight(nodes[i], nodeW);
+      if (nh > maxNodeH) maxNodeH = nh;
+    }
+    const nodeH = maxNodeH;
+
     const totalNodeW = numNodes * nodeW + (numNodes - 1) * nodeGap;
     const nodeStartX = (W - totalNodeW) / 2;
 
+    const totalH = nodeTopY + nodeH + 12;
+    svg.setAttribute("viewBox", "0 0 " + W + " " + totalH);
+
     this._drawBgConnections(svg, gsX, gsY, gsW, gsH, gcsX, gcsY, gcsW, gcsH,
       nodeStartX, nodeTopY, nodeW, numNodes, nodeGap);
-    this._drawGCS(svg, gcs, gcsX, gcsY, gcsW, gcsH, gcsInnerPad);
+    this._drawGCS(svg, gcs, gcsX, gcsY, gcsW, gcsH, gcsInnerPad, GCS_MAX_ROWS);
     this._drawGlobalScheduler(svg, globalQueue, gsX, gsY, gsW, gsH);
-    nodes.forEach((node, i) => {
-      this._drawNode(svg, node, nodeStartX + i * (nodeW + nodeGap), nodeTopY, nodeW, nodeH);
-    });
+    for (let i = 0; i < nodes.length; i++) {
+      this._drawNode(svg, nodes[i], nodeStartX + i * (nodeW + nodeGap), nodeTopY, nodeW, nodeH);
+    }
   }
 
-  _calcGCSTableHeight(gcs) {
+  _calcGCSTableHeight(gcs, maxRows) {
     let h = 0;
     const tableKeys = ["object_table", "task_table", "function_table", "actor_table"];
     for (let ti = 0; ti < tableKeys.length; ti++) {
       const key = tableKeys[ti];
       const n = gcs[key] ? Object.keys(gcs[key]).length : 0;
-      const capped = Math.min(n, 3);
+      const capped = Math.min(n, maxRows);
       h += 14 + Math.max(capped, 1) * 12 + 4 + 4;
     }
     return h;
   }
 
-  _drawGCS(svg, gcs, x, y, w, h, pad) {
+  _calcNodeHeight(node, w) {
+    const px = 6;
+    let cy = px + 12 + 10 + 6;
+    if (node.is_driver) cy += 20;
+    const workers = node.workers || [];
+    cy += 12 + Math.max(workers.length, 0) * 11 + 2 + 3;
+    cy += 22 + 3;
+    const objs = node.object_store ? Object.entries(node.object_store) : [];
+    const maxShow = Math.min(objs.length, 10);
+    const show = Math.max(1, Math.min(objs.length, maxShow));
+    cy += 14 + show * 13 + 4 + 3;
+    const actors = node.actors || [];
+    if (actors.length > 0) cy += 14 + actors.length * 13 + 4 + 3;
+    return cy;
+  }
+
+  _drawGCS(svg, gcs, x, y, w, h, pad, maxRows) {
     const g = this.svgEl("g", { id: "GCS" });
     this.componentPositions["GCS"] = { x: x, y: y, width: w, height: h };
 
@@ -437,8 +480,8 @@ class RayDemo {
       var t = tables[ti];
       var entries = gcs[t.key] ? Object.entries(gcs[t.key]) : [];
       var rowH = 12;
-      var maxRows = Math.min(entries.length, 3);
-      var th = 14 + Math.max(maxRows, 1) * rowH + 4;
+      var displayRows = Math.min(entries.length, maxRows);
+      var th = 14 + Math.max(displayRows, 1) * rowH + 4;
 
       var tg = this.svgEl("g", { id: t.id });
       this.componentPositions[t.id] = { x: x + pad, y: ty, width: w - pad * 2, height: th };
@@ -454,14 +497,14 @@ class RayDemo {
           class: "arch-value", fill: "#b0b0b0", "font-style": "italic"
         }));
       } else {
-        for (var ei = 0; ei < Math.min(entries.length, 3); ei++) {
+        for (var ei = 0; ei < displayRows; ei++) {
           var entry = entries[ei];
           tg.appendChild(this.svgText(t.fmt(entry[0], entry[1]), x + pad + 10, ty + 22 + ei * rowH, {
             class: "arch-value"
           }));
         }
-        if (entries.length > 3) {
-          tg.appendChild(this.svgText("\u2026 +" + (entries.length - 3) + " more", x + pad + 6, ty + 22 + 3 * rowH, {
+        if (entries.length > displayRows) {
+          tg.appendChild(this.svgText("\u2026 +" + (entries.length - displayRows) + " more", x + pad + 6, ty + 22 + displayRows * rowH, {
             class: "arch-value", fill: "#9ca3af", "font-style": "italic"
           }));
         }
@@ -492,7 +535,7 @@ class RayDemo {
       g.appendChild(this.svgText("Queue: " + qLen + " task" + (qLen > 1 ? "s" : ""), x + 10, y + 34, {
         class: "arch-subtitle", "font-size": "10"
       }));
-      var preview = queue.slice(0, 3).join(", ") + (qLen > 3 ? "\u2026" : "");
+      var preview = queue.slice(0, 10).join(", ") + (qLen > 10 ? "\u2026" : "");
       g.appendChild(this.svgText(preview, x + 10, y + 46, { class: "arch-value" }));
     } else {
       g.appendChild(this.svgText("Queue: empty", x + 10, y + 34, {
@@ -578,7 +621,7 @@ class RayDemo {
       class: "arch-value", "font-size": "8"
     }));
     if (lsQueue.length > 0) {
-      var lsPreview = lsQueue.slice(0, 2).join(", ") + (lsQueue.length > 2 ? "\u2026" : "");
+      var lsPreview = lsQueue.slice(0, 10).join(", ") + (lsQueue.length > 10 ? "\u2026" : "");
       lsg.appendChild(this.svgText(lsPreview, x + px + 70, cy + 22, {
         class: "arch-value", "font-size": "7.5", fill: "#6b7280"
       }));
@@ -949,9 +992,6 @@ class RayDemo {
 
     // Nodes
     var nodeIds = Object.keys(graph.nodes);
-    var TG_DATA_R = RayDemo.TG_DATA_R;
-    var TG_TASK_W = RayDemo.TG_TASK_W;
-    var TG_TASK_H = RayDemo.TG_TASK_H;
 
     for (var ni = 0; ni < nodeIds.length; ni++) {
       var id = nodeIds[ni];
@@ -960,19 +1000,20 @@ class RayDemo {
       if (!pos) continue;
 
       var ng = this.svgEl("g", { id: "tg-" + id });
+      var nw = pos.w, nh = pos.h;
 
       if (node.type === "data") {
         var fill = this._statusColor(node.status, "data");
-        ng.appendChild(this.svgEl("circle", {
-          cx: pos.x, cy: pos.y, r: TG_DATA_R,
+        var drx = nw / 2, dry = nh / 2;
+        ng.appendChild(this.svgEl("ellipse", {
+          cx: pos.x, cy: pos.y, rx: drx, ry: dry,
           fill: fill, stroke: this._darken(fill, 0.25), "stroke-width": "1.5"
         }));
         var fontSize = (node.label && node.label.length > 4) ? "5" : "6.5";
         ng.appendChild(this.svgText(node.label || id, pos.x, pos.y + 0.5, {
           class: "tg-label", "font-size": fontSize
         }));
-        // Status below circle
-        ng.appendChild(this.svgText(node.status || "", pos.x, pos.y + TG_DATA_R + 9, {
+        ng.appendChild(this.svgText(node.status || "", pos.x, pos.y + dry + 9, {
           class: "tg-sublabel", "font-size": "5.5"
         }));
       } else if (node.type === "task" || node.type === "actor_method") {
@@ -981,24 +1022,23 @@ class RayDemo {
 
         if (node.type === "actor_method") {
           ng.appendChild(this.svgEl("rect", {
-            x: pos.x - TG_TASK_W / 2 - 2, y: pos.y - TG_TASK_H / 2 - 2,
-            width: TG_TASK_W + 4, height: TG_TASK_H + 4,
+            x: pos.x - nw / 2 - 2, y: pos.y - nh / 2 - 2,
+            width: nw + 4, height: nh + 4,
             fill: "none", stroke: this._darken(fill2, 0.35), "stroke-width": "1",
             rx: "7", ry: "7"
           }));
         }
 
         ng.appendChild(this.svgEl("rect", {
-          x: pos.x - TG_TASK_W / 2, y: pos.y - TG_TASK_H / 2,
-          width: TG_TASK_W, height: TG_TASK_H,
+          x: pos.x - nw / 2, y: pos.y - nh / 2,
+          width: nw, height: nh,
           fill: fill2, stroke: this._darken(fill2, 0.25), "stroke-width": "1.5",
           rx: rx, ry: rx
         }));
         ng.appendChild(this.svgText(node.label || id, pos.x, pos.y + 0.5, {
           class: "tg-label", "font-size": "6"
         }));
-        // Status below rect
-        ng.appendChild(this.svgText(node.status || "", pos.x, pos.y + TG_TASK_H / 2 + 9, {
+        ng.appendChild(this.svgText(node.status || "", pos.x, pos.y + nh / 2 + 9, {
           class: "tg-sublabel", "font-size": "5.5"
         }));
       }
@@ -1079,6 +1119,10 @@ class RayDemo {
 
     var positions = {};
 
+    var MIN_TASK_W = 50, TEXT_PAD_X = 16;
+    var TG_DATA_R = RayDemo.TG_DATA_R;
+    var TG_TASK_H = RayDemo.TG_TASK_H;
+
     for (var lv = 0; lv <= maxLvl; lv++) {
       var grp = groups[lv] || [];
       grp.sort(function(a, b) {
@@ -1086,28 +1130,45 @@ class RayDemo {
         var tb = nodes[b].type === "data" ? 0 : 1;
         return ta - tb || a.localeCompare(b);
       });
-      var totalW = (grp.length - 1) * TG_H_SPACING;
+
+      var nodeWidths = [];
+      var totalNodesW = 0;
       for (var gi = 0; gi < grp.length; gi++) {
-        positions[grp[gi]] = { x: -totalW / 2 + gi * TG_H_SPACING, y: lv * TG_V_SPACING };
+        var nid = grp[gi];
+        var nd = nodes[nid];
+        var nw;
+        if (nd.type === "data") {
+          var dl = nd.label || nid;
+          var dataW = this._measureTextWidth(dl) + 12;
+          nw = Math.max(TG_DATA_R * 2, dataW);
+        } else {
+          var label = nd.label || nid;
+          var textW = this._measureTextWidth(label);
+          nw = Math.max(MIN_TASK_W, textW + TEXT_PAD_X);
+        }
+        nodeWidths.push(nw);
+        totalNodesW += nw;
+      }
+
+      var totalGap = (grp.length - 1) * TG_H_SPACING;
+      var totalW = totalNodesW + totalGap;
+      var x = -totalW / 2;
+      for (var gi = 0; gi < grp.length; gi++) {
+        var nw = nodeWidths[gi];
+        var nid = grp[gi];
+        var nd = nodes[nid];
+        var nh = nd.type === "data" ? TG_DATA_R * 2 : TG_TASK_H;
+        positions[nid] = { x: x + nw / 2, y: lv * TG_V_SPACING, w: nw, h: nh };
+        x += nw + TG_H_SPACING;
       }
     }
-
-    // Tight bounds around actual node extents
-    var TG_DATA_R = RayDemo.TG_DATA_R;
-    var TG_TASK_W = RayDemo.TG_TASK_W;
-    var TG_TASK_H = RayDemo.TG_TASK_H;
 
     var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     var posKeys = Object.keys(positions);
     for (var pi = 0; pi < posKeys.length; pi++) {
       var pp = positions[posKeys[pi]];
-      var nd = nodes[posKeys[pi]];
-      var halfW, halfH;
-      if (nd.type === "data") {
-        halfW = TG_DATA_R; halfH = TG_DATA_R;
-      } else {
-        halfW = TG_TASK_W / 2; halfH = TG_TASK_H / 2;
-      }
+      var halfW = pp.w / 2;
+      var halfH = pp.h / 2;
       minX = Math.min(minX, pp.x - halfW);
       maxX = Math.max(maxX, pp.x + halfW);
       minY = Math.min(minY, pp.y - halfH);
@@ -1132,14 +1193,20 @@ class RayDemo {
     if (dx === 0 && dy === 0) return pos;
 
     if (node.type === "data") {
-      var r = RayDemo.TG_DATA_R + 2;
-      var dist = Math.sqrt(dx * dx + dy * dy) || 1;
-      return { x: cx + (dx / dist) * r, y: cy + (dy / dist) * r };
+      var erx = (pos.w || RayDemo.TG_DATA_R * 2) / 2 + 2;
+      var ery = (pos.h || RayDemo.TG_DATA_R * 2) / 2 + 2;
+      if (erx === ery) {
+        var dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        return { x: cx + (dx / dist) * erx, y: cy + (dy / dist) * erx };
+      }
+      var d = Math.sqrt((dx / erx) * (dx / erx) + (dy / ery) * (dy / ery)) || 1;
+      var t = 1 / d;
+      return { x: cx + dx * t, y: cy + dy * t };
     }
 
     // Rectangle edge intersection
-    var hw = RayDemo.TG_TASK_W / 2 + 2;
-    var hh = RayDemo.TG_TASK_H / 2 + 2;
+    var hw = (pos.w || RayDemo.TG_TASK_W) / 2 + 2;
+    var hh = (pos.h || RayDemo.TG_TASK_H) / 2 + 2;
     var ex, ey;
     if (Math.abs(dx) * hh > Math.abs(dy) * hw) {
       ex = cx + (dx > 0 ? hw : -hw);
