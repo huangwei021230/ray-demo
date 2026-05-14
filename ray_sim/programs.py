@@ -118,7 +118,7 @@ def create_rl_example() -> RayProgram:
             ActorCreateOp(
                 class_name="Simulator",
                 actor_id="sim2",
-                calling_node="N1",
+                calling_node="N2",
             ),
             # 3. Run rollouts on each actor (parallel) — iteration 1
             ActorMethodCallOp(
@@ -131,7 +131,7 @@ def create_rl_example() -> RayProgram:
                 actor_id="sim2",
                 method_name="rollout",
                 args=["obj_0"],  # policy
-                calling_node="N1",
+                # calling_node="N1",
             ),
             # 3b. Run rollouts on each actor — iteration 2
             # This creates STATEFUL EDGES: sim1.rollout[2] depends on sim1.rollout[1]
@@ -145,7 +145,7 @@ def create_rl_example() -> RayProgram:
                 actor_id="sim2",
                 method_name="rollout",
                 args=["obj_0"],  # same policy
-                calling_node="N1",
+                # calling_node="N1",
             ),
             # 4. Update policy with rollout results
             # obj_0 from create_policy, obj_2 from sim1.rollout[1], obj_3 from sim2.rollout[1]

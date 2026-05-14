@@ -589,6 +589,7 @@ class RayDemo {
 
     // Workers
     var workers = node.workers || [];
+    var workerTasks = node.worker_tasks || {};
     var wH = 12 + Math.max(workers.length, 0) * 11 + 2;
     var wg = this.svgEl("g", { id: nid + "_worker" });
     this.componentPositions[nid + "_worker"] = { x: x + px, y: cy, width: w - px * 2, height: wH };
@@ -597,8 +598,12 @@ class RayDemo {
       class: "arch-section-header", "font-size": "8"
     }));
     for (var wi = 0; wi < workers.length; wi++) {
-      wg.appendChild(this.svgText(workers[wi].split("_").pop(), x + px + 12, cy + 22 + wi * 11, {
-        class: "arch-value", "font-size": "7.5"
+      var wShort = workers[wi].split("_").pop();
+      var wTask = workerTasks[workers[wi]];
+      var wLabel = wShort + (wTask ? " [" + wTask + "]" : " [idle]");
+      var wColor = wTask ? "#e65100" : "#6b7280";
+      wg.appendChild(this.svgText(wLabel, x + px + 12, cy + 22 + wi * 11, {
+        class: "arch-value", "font-size": "7.5", fill: wColor
       }));
     }
     g.appendChild(wg);

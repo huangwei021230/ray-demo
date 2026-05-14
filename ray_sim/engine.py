@@ -255,6 +255,9 @@ class Node:
         self.local_scheduler = LocalScheduler(node_id)
         self.object_store = LocalObjectStore(node_id)
         self.workers: List[str] = [f"{node_id}_worker_{i}" for i in range(2)]
+        self.worker_tasks: Dict[str, Optional[TaskID]] = {
+            w: None for w in self.workers
+        }
         self.actors: List[ActorID] = []
         self.resources = resources or {"CPU": 4, "GPU": 0}
         self.local_scheduler.available_resources = dict(self.resources)
@@ -265,6 +268,7 @@ class Node:
             object_store=dict(self.object_store.objects),
             local_queue=list(self.local_scheduler.task_queue),
             workers=list(self.workers),
+            worker_tasks=dict(self.worker_tasks),
             actors=list(self.actors),
             is_driver=self.is_driver,
         )
@@ -663,21 +667,40 @@ class ExecutionEngine:
             )
             self._record_step(event)
         
-        # ---- Step 4: Local scheduler dispatches task to worker, then worker executes ----
+        # ---- Step 4a: Dispatch task to worker (worker becomes busy) ----
         target_node.local_scheduler.dequeue()
         self.global_scheduler.update_node_load(
             selected_node, len(target_node.local_scheduler.task_queue),
             target_node.local_scheduler.available_resources)
         
         worker_id = target_node.workers[0] if target_node.workers else f"{selected_node}_worker_0"
+        target_node.worker_tasks[worker_id] = task_id
+        
         task_info.status = TaskStatus.RUNNING
         task_info.worker_id = worker_id
         self.gcs.update_task_status(task_id, "running", selected_node)
+        self._graph_nodes[task_id].status = "running"
         
-        # Compute the result (simulated)
+        dispatch_event = StepEvent(
+            phase=StepPhase.TASK_EXECUTE,
+            description=f"Local scheduler on {selected_node} dispatches {task_id} → {worker_id}",
+            detail=f"The local scheduler on {selected_node} pops {task_id} from its queue "
+                   f"and dispatches it to {worker_id}. Worker is now busy. "
+                   f"Local scheduler is free to accept new tasks (non-blocking).",
+            source=f"{selected_node}_local_scheduler",
+            target=f"{selected_node}_worker",
+            highlights=[HighlightHint(f"{selected_node}_worker", "active"),
+                       HighlightHint(f"{selected_node}_local_scheduler", "active")],
+            arrows=[ArrowHint(f"{selected_node}_local_scheduler", f"{selected_node}_worker",
+                              f"dispatch {task_id}", "control")],
+        )
+        self._record_step(dispatch_event)
+        
+        # ---- Step 4b: Worker executes, stores results, registers in GCS ----
         result_values = self._simulate_function_execution(op.function_name, op.args)
         
-        # Store results
+        target_node.worker_tasks[worker_id] = None
+        
         for rid, rval in zip(result_ids, result_values):
             target_node.object_store.put(rid, rval)
             self.object_values[rid] = rval
@@ -688,20 +711,18 @@ class ExecutionEngine:
         self.gcs.update_task_status(task_id, "completed", selected_node)
         self._graph_nodes[task_id].status = "completed"
         
-        event = StepEvent(
+        complete_event = StepEvent(
             phase=StepPhase.TASK_EXECUTE,
-            description=f"Worker executes {op.function_name}({', '.join(op.args)}) → {result_ids} registered in GCS",
-            detail=f"Worker {worker_id} on {selected_node} executes {op.function_name}(), "
+            description=f"Worker {worker_id} completes {op.function_name}() → {result_ids} registered in GCS",
+            detail=f"Worker {worker_id} on {selected_node} finishes executing {op.function_name}(), "
                    f"stores results {result_ids} in local object store, and registers them in GCS. "
-                   f"Results: {dict(zip(result_ids, result_values))}",
+                   f"Worker is now idle. Results: {dict(zip(result_ids, result_values))}",
             source=f"{selected_node}_worker",
             target=f"{selected_node}_object_store",
             highlights=[HighlightHint(f"{selected_node}_worker", "active"),
                        HighlightHint(f"{selected_node}_object_store", "new"),
                        HighlightHint("GCS_object_table", "new")],
-            arrows=[ArrowHint(f"{selected_node}_local_scheduler", f"{selected_node}_worker",
-                              f"dispatch {task_id}", "control"),
-                    ArrowHint(f"{selected_node}_worker", f"{selected_node}_object_store",
+            arrows=[ArrowHint(f"{selected_node}_worker", f"{selected_node}_object_store",
                               f"write {result_ids}", "data"),
                     ArrowHint(f"{selected_node}_object_store", "GCS",
                               f"register {result_ids}", "control", "dashed")],
@@ -709,7 +730,7 @@ class ExecutionEngine:
             new_graph_edges=[TaskGraphEdge(task_id, rid, EdgeType.DATA) for rid in result_ids],
             data_changes={"gcs_object_table_add": {rid: {"location": selected_node, "size": 100} for rid in result_ids}},
         )
-        self._record_step(event)
+        self._record_step(complete_event)
         
         return result_ids
     
@@ -876,15 +897,38 @@ class ExecutionEngine:
         )
         self._record_step(event)
         
-        # Step 2: Local scheduler dispatches to actor, then execute + register results
+        # Step 2a: Local scheduler dispatches to actor worker (worker becomes busy)
         target_node.local_scheduler.dequeue()
         self.global_scheduler.update_node_load(
             target_node_id, len(target_node.local_scheduler.task_queue),
             target_node.local_scheduler.available_resources)
         
+        actor_worker = target_node.workers[0] if target_node.workers else f"{target_node_id}_worker_0"
+        target_node.worker_tasks[actor_worker] = task_id
+        task_info.status = TaskStatus.RUNNING
+        self.gcs.update_task_status(task_id, "running", target_node_id)
+        self._graph_nodes[task_id].status = "running"
+        
+        dispatch_event = StepEvent(
+            phase=StepPhase.ACTOR_METHOD,
+            description=f"Local scheduler on {target_node_id} dispatches {task_id} → {actor_worker} (actor worker)",
+            detail=f"The local scheduler dispatches actor method {op.method_name}() to {actor_worker}. "
+                   f"Worker is now busy executing {task_id}.",
+            source=f"{target_node_id}_local_scheduler",
+            target=f"{target_node_id}_actor",
+            highlights=[HighlightHint(f"{target_node_id}_actor", "active"),
+                       HighlightHint(f"{target_node_id}_local_scheduler", "active")],
+            arrows=[ArrowHint(f"{target_node_id}_local_scheduler", f"{target_node_id}_actor",
+                              f"dispatch {task_id}", "control")],
+        )
+        self._record_step(dispatch_event)
+        
+        # Step 2b: Execute method, store results, register in GCS
         result_values = self._simulate_function_execution(
             f"{op.actor_id}.{op.method_name}", op.args
         )
+        
+        target_node.worker_tasks[actor_worker] = None
         
         task_info.status = TaskStatus.COMPLETED
         self.gcs.update_task_status(task_id, "completed", target_node_id)
@@ -896,15 +940,15 @@ class ExecutionEngine:
             self.gcs.register_object(rid, target_node_id, created_by=task_id)
             self._graph_nodes[rid].status = "completed"
         
-        # Update actor's last method
         actor_info.last_method_task = task_id
         self.gcs.update_actor_last_method(op.actor_id, task_id)
         
-        event = StepEvent(
+        complete_event = StepEvent(
             phase=StepPhase.ACTOR_METHOD,
             description=f"Actor {op.actor_id}.{op.method_name}() completes → {result_ids}",
-            detail=f"Method executes on {target_node_id}. Result {result_ids} stored in local object store "
-                   f"and registered with GCS.",
+            detail=f"{actor_worker} finishes executing {op.actor_id}.{op.method_name}(). "
+                   f"Result {result_ids} stored in local object store and registered with GCS. "
+                   f"Worker is now idle.",
             source=f"{target_node_id}_actor",
             target=f"{target_node_id}_object_store",
             highlights=[HighlightHint(f"{target_node_id}_actor", "active"),
@@ -917,7 +961,7 @@ class ExecutionEngine:
             new_graph_nodes=[TaskGraphNode(rid, "data", f"result", "completed") for rid in result_ids],
             new_graph_edges=[TaskGraphEdge(task_id, rid, EdgeType.DATA) for rid in result_ids],
         )
-        self._record_step(event)
+        self._record_step(complete_event)
         
         return result_ids
     
@@ -1145,6 +1189,7 @@ class ExecutionEngine:
                 "object_store": {k: str(v) for k, v in nstate.object_store.items()},
                 "local_queue": nstate.local_queue,
                 "workers": nstate.workers,
+                "worker_tasks": nstate.worker_tasks,
                 "actors": nstate.actors,
             }
         

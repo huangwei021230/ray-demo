@@ -177,6 +177,7 @@ class NodeState:
     object_store: Dict[ObjectID, Any] = field(default_factory=dict)  # object_id -> value
     local_queue: List[TaskID] = field(default_factory=list)
     workers: List[str] = field(default_factory=list)
+    worker_tasks: Dict[str, Optional[str]] = field(default_factory=dict)
     actors: List[ActorID] = field(default_factory=list)
     is_driver: bool = False
 
