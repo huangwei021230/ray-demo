@@ -1,2 +1,9 @@
-/__pycache__
-/ray_sim/__pycache__
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+logs/
+ray_session/
+*.log
