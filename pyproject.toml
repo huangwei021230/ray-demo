@@ -1,0 +1,11 @@
+[project]
+name = "ray-demo"
+version = "0.1.0"
+description = "Ray architecture simulator + real Ray distributed SGD demo"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.136",
+    "uvicorn[standard]>=0.47",
+    "websockets>=16",
+    "ray[default]>=2.55",
+]
