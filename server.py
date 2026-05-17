@@ -6,7 +6,6 @@ for the Ray simulation engine.
 """
 
 import json
-import asyncio
 from typing import Dict, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +39,7 @@ async def list_programs():
             "id": key,
             "name": prog.name,
             "description": prog.description,
+            "paper_mapping": prog.paper_mapping,
             "num_nodes": prog.num_nodes,
         })
     return programs
@@ -55,6 +55,7 @@ async def get_program(program_id: str):
         "id": program_id,
         "name": prog.name,
         "description": prog.description,
+        "paper_mapping": prog.paper_mapping,
         "num_nodes": prog.num_nodes,
         "num_operations": len(prog.operations),
     }
@@ -104,6 +105,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                     "type": "program_loaded",
                     "name": program.name,
                     "description": program.description,
+                    "paper_mapping": program.paper_mapping,
                     "num_nodes": program.num_nodes,
                     "total_steps": engine.get_total_steps(),
                 })
@@ -151,28 +153,16 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
                 state["type"] = "state"
                 await websocket.send_json(state)
             
-            elif action == "autoplay":
-                """Auto-play through steps with a delay."""
+            elif action == "reset":
+                # Rewind to step 0 of the currently loaded program (do not
+                # destroy the engine — the user wants to replay, not unload).
                 if engine is None:
                     await websocket.send_json({"type": "error", "message": "No program loaded"})
                     continue
-                
-                speed = msg.get("speed", 1000)  # ms between steps
-                while current_step < engine.get_total_steps() - 1:
-                    current_step += 1
-                    state = engine.to_json(current_step)
-                    state["type"] = "state"
-                    await websocket.send_json(state)
-                    await asyncio.sleep(speed / 1000.0)
-                
-                await websocket.send_json({"type": "info", "message": "Playback complete"})
-            
-            elif action == "reset":
-                if session_id in sessions:
-                    del sessions[session_id]
-                engine = None
                 current_step = 0
-                await websocket.send_json({"type": "reset"})
+                state = engine.to_json(current_step)
+                state["type"] = "state"
+                await websocket.send_json(state)
             
             else:
                 await websocket.send_json({"type": "error", "message": f"Unknown action: {action}"})

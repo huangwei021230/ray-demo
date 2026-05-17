@@ -329,6 +329,71 @@ body {
   line-height: 1.5;
 }
 
+/* ===== Program Overview (description + paper mapping) ===== */
+.program-overview {
+  padding: 8px 14px;
+  background: var(--surface-alt);
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.program-overview.hidden { display: none; }
+
+.overview-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.overview-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  min-width: 130px;
+  padding-top: 2px;
+}
+
+.overview-row.paper .paper-label {
+  color: #5e35b1;
+}
+
+.overview-text {
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.overview-row.paper .overview-text {
+  font-style: italic;
+  color: var(--text-secondary);
+}
+
+.overview-text strong {
+  color: var(--text-primary);
+  font-weight: 700;
+  font-style: normal;
+}
+
+.overview-text em {
+  font-style: italic;
+}
+
+.overview-text code {
+  font-family: var(--font-mono, ui-monospace, "SF Mono", Menlo, monospace);
+  font-size: 0.74rem;
+  background: rgba(94, 53, 177, 0.08);
+  color: #5e35b1;
+  padding: 0 4px;
+  border-radius: 3px;
+  font-style: normal;
+}
+
 /* ===== Main Content — left/right split ===== */
 #main-content {
   flex: 1;
@@ -572,6 +637,20 @@ body {
   stroke-width: 1.5;
   rx: 6;
   ry: 6;
+}
+
+.arch-box-dead {
+  fill: #ffebee;
+  stroke: #c62828;
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  rx: 6;
+  ry: 6;
+}
+
+.node-dead {
+  opacity: 0.55;
+  filter: grayscale(60%);
 }
 
 .arch-title {

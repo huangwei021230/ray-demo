@@ -54,7 +54,8 @@ class RayDemo {
      ================================================================ */
 
   connect() {
-    const url = "ws://localhost:8000/ws/" + this.sessionId;
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = proto + "//" + window.location.host + "/ws/" + this.sessionId;
     try {
       this.ws = new WebSocket(url);
     } catch (e) {
@@ -133,6 +134,15 @@ class RayDemo {
     document.getElementById("total-steps").textContent = data.total_steps || 0;
     document.getElementById("current-step").textContent = "0";
     this.updateProgressBar(0, data.total_steps);
+
+    const overview = document.getElementById("program-overview");
+    const descEl = document.getElementById("program-description");
+    const mapEl = document.getElementById("program-paper-mapping");
+    if (overview && descEl && mapEl) {
+      descEl.innerHTML = this.renderInlineMarkdown(data.description || "");
+      mapEl.innerHTML = this.renderInlineMarkdown(data.paper_mapping || "");
+      overview.classList.toggle("hidden", !data.description && !data.paper_mapping);
+    }
 
     this.setControlsEnabled(true);
     this.clearArchitecture();
@@ -240,6 +250,46 @@ class RayDemo {
     this.sendCommand({ action: "load", program: name });
   }
 
+  /**
+   * Render a tiny subset of Markdown safely:
+   *   **bold**, __bold__, *italic*, _italic_, `code`.
+   * Everything else is HTML-escaped. No links, no HTML passthrough.
+   */
+  renderInlineMarkdown(src) {
+    if (!src) return "";
+    var esc = String(src)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+    // Bold first (longer markers), then italic, then code.
+    esc = esc.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    esc = esc.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+    esc = esc.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
+    esc = esc.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
+    esc = esc.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    return esc;
+  }
+
+  async fetchPrograms() {
+    try {
+      const res = await fetch("/api/programs");
+      const programs = await res.json();
+      const sel = document.getElementById("program-select");
+      sel.innerHTML = '<option value="">Select program…</option>';
+      programs.forEach((p) => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name;
+        opt.title = p.description || "";
+        sel.appendChild(opt);
+      });
+    } catch (err) {
+      console.error("Failed to load programs:", err);
+    }
+  }
+
   stepForward()  { this.sendCommand({ action: "step" }); }
   stepBack()     { this.sendCommand({ action: "back" }); }
 
@@ -247,6 +297,9 @@ class RayDemo {
     this.stopAutoplay();
     this.eventLogMap = {};
     this.maxStepSeen = 0;
+    this.clearEventLog();
+    this.clearArrows();
+    this.clearHighlights();
     this.sendCommand({ action: "reset" });
   }
 
@@ -259,7 +312,8 @@ class RayDemo {
   startAutoplay() {
     this.autoplaying = true;
     document.getElementById("btn-play").classList.add("active");
-    this.sendCommand({ action: "autoplay", speed: this.speed });
+    // Drive playback entirely from the client so a pause click takes effect
+    // immediately. (The server has no blocking autoplay loop to interrupt.)
     this.autoplayTimer = setInterval(() => this.stepForward(), this.speed);
   }
 
@@ -465,15 +519,28 @@ class RayDemo {
     }));
 
     var ty = y + 68;
+    // Width budget for a single row (in characters) \u2014 keep entries from
+    // overflowing the GCS box. SVG text is non-monospace so this is approximate.
+    var maxChars = Math.max(20, Math.floor((w - pad * 2 - 12) / 5.2));
+    function clip(s) {
+      return s.length > maxChars ? s.slice(0, maxChars - 1) + "\u2026" : s;
+    }
     var tables = [
       { key: "object_table", label: "Object Table", id: "GCS_object_table",
-        fmt: function(k, v) { return k + " \u2192 " + v.location + " (" + v.size + "B)"; } },
+        fmt: function(k, v) { return clip(k + " \u2192 " + v.location + " (" + v.size + "B)"); } },
       { key: "task_table", label: "Task Table", id: "GCS_task_table",
-        fmt: function(k, v) { return k + ": " + v.status + (v.node ? " @ " + v.node : ""); } },
+        fmt: function(k, v) { return clip(k + ": " + v.status + (v.node ? " @ " + v.node : "")); } },
       { key: "function_table", label: "Function Table", id: "GCS_function_table",
-        fmt: function(k, v) { return k + " (" + v.num_returns + " rets)"; } },
+        fmt: function(k, v) { return clip(k + " (" + v.num_returns + " rets)"); } },
       { key: "actor_table", label: "Actor Table", id: "GCS_actor_table",
-        fmt: function(k, v) { return k + ": " + (typeof v === "object" ? JSON.stringify(v) : v); } }
+        fmt: function(k, v) {
+          if (typeof v !== "object" || v === null) return clip(k + ": " + v);
+          var cls = v.class_name || "?";
+          var node = v.node || "\u2014";
+          var methods = Array.isArray(v.methods) && v.methods.length
+              ? " [" + v.methods.join(",") + "]" : "";
+          return clip(k + " \u2192 " + cls + "@" + node + methods);
+        } }
     ];
 
     for (var ti = 0; ti < tables.length; ti++) {
@@ -552,7 +619,9 @@ class RayDemo {
     this.componentPositions[nid] = { x: x, y: y, width: w, height: h };
 
     var isDriver = node.is_driver;
-    var boxClass = isDriver ? "arch-box-driver" : "arch-box-node";
+    var isDead = node.is_dead;
+    var boxClass = isDead ? "arch-box-dead" : (isDriver ? "arch-box-driver" : "arch-box-node");
+    if (isDead) g.setAttribute("class", "node-dead");
 
     g.appendChild(this.svgEl("rect", {
       x: x + 2, y: y + 2, width: w, height: h,
@@ -564,8 +633,8 @@ class RayDemo {
     var cy = y + px + 18;
 
     g.appendChild(this.svgText(nid, x + px + 2, cy, { class: "arch-title", "font-size": "11" }));
-    var roleText = isDriver ? "\u2605 Driver" : "Worker";
-    var roleColor = isDriver ? "#2e7d32" : "#546e7a";
+    var roleText = isDead ? "\u2620 DEAD" : (isDriver ? "\u2605 Driver" : "Worker");
+    var roleColor = isDead ? "#c62828" : (isDriver ? "#2e7d32" : "#546e7a");
     g.appendChild(this.svgText(roleText, x + w - px - 2, cy, {
       class: "arch-subtitle", "font-size": "9", "text-anchor": "end", fill: roleColor
     }));
@@ -1334,4 +1403,5 @@ class RayDemo {
 
 document.addEventListener("DOMContentLoaded", function() {
   window.rayDemo = new RayDemo();
+  window.rayDemo.fetchPrograms();
 });

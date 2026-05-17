@@ -45,6 +45,8 @@ class StepPhase(Enum):
     RESULT_GET = "result_get"
     ACTOR_CREATE = "actor_create"
     ACTOR_METHOD = "actor_method"
+    NODE_FAIL = "node_fail"
+    LINEAGE_REPLAY = "lineage_replay"
 
 class EdgeType(Enum):
     """Three edge types from the paper's dynamic task graph model"""
@@ -180,6 +182,7 @@ class NodeState:
     worker_tasks: Dict[str, Optional[str]] = field(default_factory=dict)
     actors: List[ActorID] = field(default_factory=list)
     is_driver: bool = False
+    is_dead: bool = False
 
 @dataclass
 class GCSState:
@@ -273,6 +276,35 @@ class GetOp(ProgramOp):
     object_id: ObjectID = ""
     calling_node: NodeID = "N1"
 
+@dataclass
+class BurstStart(ProgramOp):
+    """Begin a batch-submission window: submitted tasks are queued on their
+    target nodes but NOT dispatched until the matching BurstEnd. Lets the
+    visualization show queue depth actually growing (otherwise the synchronous
+    engine drains the queue between every op, so overload is never visible).
+    """
+    op_type: str = "burst_start"
+    note: str = ""
+
+@dataclass
+class BurstEnd(ProgramOp):
+    """Drain all pending tasks accumulated since the matching BurstStart, in
+    submission order, dispatching + executing each one with full step events.
+    """
+    op_type: str = "burst_end"
+    note: str = ""
+
+@dataclass
+class NodeFailOp(ProgramOp):
+    """Simulate a node failure: object store contents lost.
+
+    Used to demonstrate Ray's fault tolerance via lineage replay
+    (paper §4.2.1 / Figure 11). Subsequent ray.get() calls on objects
+    that lived on the failed node will trigger task re-execution.
+    """
+    op_type: str = "node_fail"
+    node_id: NodeID = ""
+
 
 @dataclass
 class RayProgram:
@@ -284,3 +316,7 @@ class RayProgram:
     node_labels: Dict[NodeID, str] = field(default_factory=dict)
     node_resources: Dict[NodeID, Dict[str, float]] = field(default_factory=dict)
     driver_node: Optional[NodeID] = None  # defaults to N1 if not set
+    # A longer narrative tying this program back to a specific section/figure
+    # in the Ray paper (OSDI '18). Surfaced in the UI so audiences see why
+    # this scenario is worth watching.
+    paper_mapping: str = ""

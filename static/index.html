@@ -17,11 +17,7 @@
       <div class="control-group">
         <label for="program-select">Example</label>
         <select id="program-select">
-          <option value="">Select program…</option>
-          <option value="add">add(a, b) — Paper Figure 5</option>
-          <option value="rl">Reinforcement Learning</option>
-          <option value="local">Local Scheduling</option>
-          <option value="chained">Chained Tasks</option>
+          <option value="">Loading programs…</option>
         </select>
       </div>
       <div class="control-group step-controls">
@@ -63,6 +59,18 @@
   </div>
   <div id="step-detail" class="step-detail collapsed">
     <p id="step-detail-text"></p>
+  </div>
+
+  <!-- Program overview: description + paper mapping -->
+  <div id="program-overview" class="program-overview hidden">
+    <div class="overview-row">
+      <span class="overview-label">场景说明</span>
+      <p id="program-description" class="overview-text"></p>
+    </div>
+    <div class="overview-row paper">
+      <span class="overview-label paper-label">📄 对应论文</span>
+      <p id="program-paper-mapping" class="overview-text"></p>
+    </div>
   </div>
 
   <!-- Main Content — left/right split -->

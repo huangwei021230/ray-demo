@@ -136,9 +136,16 @@ class LocalScheduler:
         self.threshold = threshold
         self.task_queue: List[TaskID] = []
         self.available_resources: Dict[str, float] = {"CPU": 4, "GPU": 0}
-    
+        # Synchronous engine — by the time the next op arrives the queue has
+        # drained, so len(task_queue) never grows. To still demonstrate the
+        # "overload → forward" branch of bottom-up scheduling, we also track a
+        # cumulative admission count that survives op boundaries. The global
+        # scheduler still sees realistic per-tick queue depths via heartbeats.
+        self.admitted_recent: int = 0
+
     def is_overloaded(self) -> bool:
-        return len(self.task_queue) >= self.threshold
+        return (len(self.task_queue) >= self.threshold
+                or self.admitted_recent >= self.threshold)
     
     def can_satisfy(self, resources: Dict[str, float]) -> bool:
         for res, amount in resources.items():
@@ -159,7 +166,8 @@ class LocalScheduler:
     
     def enqueue(self, task_id: TaskID):
         self.task_queue.append(task_id)
-    
+        self.admitted_recent += 1
+
     def dequeue(self) -> Optional[TaskID]:
         if self.task_queue:
             return self.task_queue.pop(0)
@@ -183,6 +191,9 @@ class GlobalScheduler:
         self.node_loads: Dict[NodeID, Dict] = {}  # from heartbeats
         self.avg_task_duration: float = 5.0  # ms (exponential averaging)
         self.avg_bandwidth: float = 1000.0   # MB/s (exponential averaging)
+        # Populated by select_node so callers can include scoring details in
+        # event descriptions (paper §4.3 "estimated waiting time").
+        self.last_scoring: List[Dict] = []
     
     def update_node_load(self, node_id: NodeID, queue_size: int, resources: Dict[str, float]):
         self.node_loads[node_id] = {
@@ -197,7 +208,8 @@ class GlobalScheduler:
         """
         best_node = None
         best_time = float('inf')
-        
+        scoring: List[Dict] = []
+
         for node_id in available_nodes:
             # Check if node has required resources
             load = self.node_loads.get(node_id, {"queue_size": 0, "resources": {"CPU": 4, "GPU": 0}})
@@ -207,31 +219,61 @@ class GlobalScheduler:
                     can_run = False
                     break
             if not can_run:
+                scoring.append({
+                    "node": node_id, "eligible": False,
+                    "reason": f"missing resources (need {task.resources}, has {load['resources']})",
+                })
                 continue
-            
+
             # Estimated queue time
             queue_time = load["queue_size"] * self.avg_task_duration
-            
+
             # Estimated transfer time for remote inputs
             remote_input_size = 0
+            remote_args: List[ObjectID] = []
             for arg_id in task.args:
                 loc_info = gcs.get_object_location(arg_id)
                 if loc_info and loc_info["location"] != node_id:
                     remote_input_size += loc_info["size"]
-            
+                    remote_args.append(arg_id)
+
             transfer_time = (remote_input_size / (1024 * 1024)) / self.avg_bandwidth * 1000  # ms
-            
+
             total_time = queue_time + transfer_time
-            
+            scoring.append({
+                "node": node_id, "eligible": True,
+                "queue_size": load["queue_size"],
+                "queue_time_ms": round(queue_time, 3),
+                "remote_bytes": remote_input_size,
+                "remote_args": remote_args,
+                "transfer_time_ms": round(transfer_time, 3),
+                "total_ms": round(total_time, 3),
+            })
+
             if total_time < best_time:
                 best_time = total_time
                 best_node = node_id
-        
+
         # Fallback: pick first available node with resources
         if best_node is None and available_nodes:
             best_node = available_nodes[0]
-        
+
+        self.last_scoring = scoring
         return best_node
+
+    def format_scoring(self) -> str:
+        """Render last_scoring as a one-line breakdown for event detail."""
+        parts = []
+        for s in self.last_scoring:
+            if not s.get("eligible", True):
+                parts.append(f"{s['node']}: ineligible ({s['reason']})")
+            else:
+                parts.append(
+                    f"{s['node']}: queue={s['queue_size']}×{self.avg_task_duration}ms"
+                    f"+transfer={s['remote_bytes']}B/{self.avg_bandwidth}MB·s"
+                    f" → {s['total_ms']}ms"
+                )
+        return "; ".join(parts)
     
     def enqueue(self, task_id: TaskID):
         self.pending_tasks.append(task_id)
@@ -261,7 +303,8 @@ class Node:
         self.actors: List[ActorID] = []
         self.resources = resources or {"CPU": 4, "GPU": 0}
         self.local_scheduler.available_resources = dict(self.resources)
-    
+        self.is_dead: bool = False
+
     def get_state(self) -> NodeState:
         return NodeState(
             node_id=self.node_id,
@@ -271,6 +314,7 @@ class Node:
             worker_tasks=dict(self.worker_tasks),
             actors=list(self.actors),
             is_driver=self.is_driver,
+            is_dead=self.is_dead,
         )
 
 
@@ -306,6 +350,10 @@ class ExecutionEngine:
         self._task_counter = 0
         self._object_counter = 0
         self._actor_counter = 0
+
+        # Burst-submission window state (see BurstStart / BurstEnd ops).
+        self._burst_mode: bool = False
+        self._burst_pending: List[Dict] = []
     
     def _next_task_id(self) -> TaskID:
         tid = f"task_{self._task_counter}"
@@ -573,23 +621,26 @@ class ExecutionEngine:
                 if loc:
                     arg_locations[arg_id] = loc["location"]
             
-            # Select best node
-            available_nodes = list(self.nodes.keys())
+            # Select best node — only living nodes are candidates
+            available_nodes = [nid for nid, n in self.nodes.items() if not n.is_dead]
             selected_node = self.global_scheduler.select_node(task_spec, self.gcs, available_nodes)
-            
+
             if selected_node is None:
                 selected_node = available_nodes[0]
-            
+
             task_info.assigned_node = selected_node
             task_info.status = TaskStatus.SCHEDULED
             self.gcs.update_task_status(task_id, "scheduled", selected_node)
-            
+
+            scoring_breakdown = self.global_scheduler.format_scoring()
+
             event = StepEvent(
                 phase=StepPhase.GLOBAL_SCHEDULE,
                 description=f"{op.calling_node} forwards {task_id} → global scheduler assigns to {selected_node}",
                 detail=f"Local scheduler on {op.calling_node} cannot schedule {task_id} ({reason}). "
-                       f"Global scheduler queries GCS for arg locations and selects {selected_node} "
-                       f"(best data locality: {', '.join(f'{k}@{v}' for k, v in arg_locations.items())}).",
+                       f"Global scheduler scores candidates by estimated_waiting_time = queue_time + transfer_time "
+                       f"(paper §4.3). Scores: {scoring_breakdown}. "
+                       f"Arg locations from GCS: {', '.join(f'{k}@{v}' for k, v in arg_locations.items()) or 'none'}.",
                 source=f"{op.calling_node}_local_scheduler",
                 target=f"{selected_node}_local_scheduler",
                 highlights=[HighlightHint("global_scheduler", "active"), HighlightHint(f"{selected_node}_local_scheduler", "new")],
@@ -605,7 +656,7 @@ class ExecutionEngine:
             target_node = self.nodes[selected_node]
             target_node.local_scheduler.enqueue(task_id)
             self.global_scheduler.update_node_load(
-                selected_node, len(target_node.local_scheduler.task_queue),
+                selected_node, max(len(target_node.local_scheduler.task_queue), target_node.local_scheduler.admitted_recent),
                 target_node.local_scheduler.available_resources)
             
         else:
@@ -615,7 +666,7 @@ class ExecutionEngine:
             self.gcs.update_task_status(task_id, "scheduled", op.calling_node)
             calling_node.local_scheduler.enqueue(task_id)
             self.global_scheduler.update_node_load(
-                op.calling_node, len(calling_node.local_scheduler.task_queue),
+                op.calling_node, max(len(calling_node.local_scheduler.task_queue), calling_node.local_scheduler.admitted_recent),
                 calling_node.local_scheduler.available_resources)
             
             event = StepEvent(
@@ -633,11 +684,42 @@ class ExecutionEngine:
             selected_node = op.calling_node
         
         target_node = self.nodes[selected_node]
-        
+
+        if self._burst_mode:
+            # Defer Step 3+4. Task stays queued on target_node so successive
+            # submissions can see the queue depth grow and trigger overload.
+            self._burst_pending.append({
+                "task_id": task_id, "selected_node": selected_node,
+                "op": op, "result_ids": result_ids,
+            })
+            return result_ids
+
+        self._finish_remote_call(task_id, selected_node, op, result_ids)
+        return result_ids
+
+    def _finish_remote_call(self, task_id: TaskID, selected_node: NodeID,
+                             op: RemoteCallOp, result_ids: List[ObjectID]):
+        """Steps 3+4 of execute_remote_call (data fetch + dispatch + execute).
+
+        Extracted so burst mode can defer them — the burst handler invokes this
+        for each pending task once the submission window closes.
+        """
+        task_info = self.tasks[task_id]
+        target_node = self.nodes[selected_node]
+
+        # Before fetching, replay lineage for any arg that lives on a dead node
+        # (paper §4.2.1) — otherwise the worker would read empty bytes.
+        for arg_id in list(op.args):
+            loc_info = self.gcs.get_object_location(arg_id)
+            if loc_info:
+                src = self.nodes.get(loc_info["location"])
+                if src and src.is_dead and not target_node.object_store.has(arg_id):
+                    self._ensure_object_alive(arg_id, op.calling_node)
+
         # ---- Step 3: Fetch missing data (single step for all args) ----
         missing_args = [arg_id for arg_id in op.args if not target_node.object_store.has(arg_id)]
         local_args = [arg_id for arg_id in op.args if target_node.object_store.has(arg_id)]
-        
+
         if missing_args:
             # Replicate all missing args
             replication_info = []
@@ -661,12 +743,18 @@ class ExecutionEngine:
                 fetch_arrows.append(ArrowHint(f"{src_node}_object_store", f"{selected_node}_object_store",
                                                f"replicate {', '.join(arg_ids)}", "data"))
             
+            zero_copy_note = (
+                f" Local args {local_args} read shared-memory zero-copy with no transfer."
+                if local_args else ""
+            )
             event = StepEvent(
                 phase=StepPhase.DATA_FETCH,
-                description=f"{selected_node} fetches missing args: {', '.join(replication_info)}",
-                detail=f"Local: {local_args if local_args else 'none'}. "
-                       f"Fetched from remote nodes: {', '.join(replication_info)}. "
-                       f"Objects are replicated via point-to-point transfer for shared memory access.",
+                description=f"{selected_node} replicates missing args: {', '.join(replication_info)}"
+                            + (f" (+ {len(local_args)} zero-copy)" if local_args else ""),
+                detail=f"Plasma replicate-on-read (paper §4.2.3): missing args are pulled point-to-point "
+                       f"from the recorded GCS location into {selected_node}'s object store so the worker "
+                       f"can mmap them shared-memory.{zero_copy_note} "
+                       f"Replications: {', '.join(replication_info)}.",
                 source=f"{selected_node}_object_store",
                 target=f"{selected_node}_object_store",
                 highlights=[HighlightHint(f"{selected_node}_object_store", "new"),
@@ -674,11 +762,26 @@ class ExecutionEngine:
                 arrows=fetch_arrows,
             )
             self._record_step(event)
-        
+        elif op.args:
+            # All args already local → demonstrate Plasma same-node zero-copy path
+            event = StepEvent(
+                phase=StepPhase.DATA_FETCH,
+                description=f"{selected_node}: all {len(op.args)} arg(s) already local → zero-copy mmap",
+                detail=f"Args {op.args} are already in {selected_node}'s object store. "
+                       f"The worker maps them shared-memory directly — no network transfer "
+                       f"(paper §4.2.3 'same-node zero-copy reads via shared memory').",
+                source=f"{selected_node}_object_store",
+                target=f"{selected_node}_worker",
+                highlights=[HighlightHint(f"{selected_node}_object_store", "active")],
+                arrows=[ArrowHint(f"{selected_node}_object_store", f"{selected_node}_worker",
+                                  f"mmap {op.args}", "data", "dashed")],
+            )
+            self._record_step(event)
+
         # ---- Step 4a: Dispatch task to worker (worker becomes busy) ----
         target_node.local_scheduler.dequeue()
         self.global_scheduler.update_node_load(
-            selected_node, len(target_node.local_scheduler.task_queue),
+            selected_node, max(len(target_node.local_scheduler.task_queue), target_node.local_scheduler.admitted_recent),
             target_node.local_scheduler.available_resources)
         
         worker_id = target_node.workers[0] if target_node.workers else f"{selected_node}_worker_0"
@@ -739,9 +842,7 @@ class ExecutionEngine:
             data_changes={"gcs_object_table_add": {rid: {"location": selected_node, "size": 100} for rid in result_ids}},
         )
         self._record_step(complete_event)
-        
-        return result_ids
-    
+
     def execute_actor_create(self, op: ActorCreateOp) -> ActorID:
         """Create an actor instance.
         
@@ -874,7 +975,7 @@ class ExecutionEngine:
         # Enqueue into target node's local scheduler
         target_node.local_scheduler.enqueue(task_id)
         self.global_scheduler.update_node_load(
-            target_node_id, len(target_node.local_scheduler.task_queue),
+            target_node_id, max(len(target_node.local_scheduler.task_queue), target_node.local_scheduler.admitted_recent),
             target_node.local_scheduler.available_resources)
         
         # Fetch missing args
@@ -912,7 +1013,7 @@ class ExecutionEngine:
         # Step 2a: Local scheduler dispatches to actor worker (worker becomes busy)
         target_node.local_scheduler.dequeue()
         self.global_scheduler.update_node_load(
-            target_node_id, len(target_node.local_scheduler.task_queue),
+            target_node_id, max(len(target_node.local_scheduler.task_queue), target_node.local_scheduler.admitted_recent),
             target_node.local_scheduler.available_resources)
         
         actor_worker = target_node.workers[0] if target_node.workers else f"{target_node_id}_worker_0"
@@ -977,13 +1078,201 @@ class ExecutionEngine:
         
         return result_ids
     
+    def execute_burst_start(self, op: BurstStart):
+        """Open a batch-submission window — tasks queue up without dispatching.
+
+        Used by demos (e.g. load_balancing) that want the audience to see the
+        local queue actually fill up and trigger overload-based forwarding.
+        """
+        self._burst_mode = True
+        self._burst_pending = []
+        event = StepEvent(
+            phase=StepPhase.TASK_SUBMIT,
+            description=f"⏸ Burst window opened — submitted tasks will queue but not dispatch",
+            detail=(op.note or "")
+                   + " Bottom-up scheduling (§4.3) admits tasks locally until the queue "
+                     "hits the overload threshold; subsequent submissions are forwarded "
+                     "to the global scheduler. Watch the local-queue depth grow.",
+            source="driver",
+            target="system",
+        )
+        self._record_step(event)
+
+    def execute_burst_end(self, op: BurstEnd):
+        """Drain all tasks queued since BurstStart in submission order."""
+        self._burst_mode = False
+        pending = self._burst_pending
+        self._burst_pending = []
+        event = StepEvent(
+            phase=StepPhase.TASK_SUBMIT,
+            description=f"▶ Burst window closes — draining {len(pending)} queued task(s)",
+            detail=(op.note or "")
+                   + " Each node's local scheduler now dispatches what it accepted. "
+                     "Forwarded tasks dispatch on their assigned nodes — all three nodes "
+                     "participate in execution.",
+            source="system",
+            target="system",
+        )
+        self._record_step(event)
+        for entry in pending:
+            self._finish_remote_call(
+                entry["task_id"], entry["selected_node"],
+                entry["op"], entry["result_ids"],
+            )
+
+    def execute_node_fail(self, op: NodeFailOp):
+        """Simulate a node crash (paper §4.2.1 / Figure 11).
+
+        The node's object store is wiped and the node is marked dead.
+        Subsequent ray.get() calls on objects that lived only on this node
+        will trigger lineage replay.
+        """
+        if op.node_id not in self.nodes:
+            return
+        node = self.nodes[op.node_id]
+        lost_objects = list(node.object_store.objects.keys())
+        lost_actors = list(node.actors)
+        node.object_store.objects.clear()
+        node.local_scheduler.task_queue.clear()
+        for w in node.worker_tasks:
+            node.worker_tasks[w] = None
+        node.is_dead = True
+        # Detach actors from the node so future actor methods would need replay.
+        for aid in lost_actors:
+            ainfo = self.actors_info.get(aid)
+            if ainfo:
+                ainfo.node_id = ""
+        # Remove from global scheduler's load table so it's not selected again.
+        self.global_scheduler.node_loads.pop(op.node_id, None)
+
+        event = StepEvent(
+            phase=StepPhase.NODE_FAIL,
+            description=f"💥 Node {op.node_id} fails — local object store and worker state lost",
+            detail=f"Node {op.node_id} crashes. Its object store loses {len(lost_objects)} object(s) "
+                   f"({lost_objects}). Actors {lost_actors} are gone. The GCS still holds the lineage "
+                   f"(task_table + object_table.created_by), which Ray uses to reconstruct objects "
+                   f"on demand (paper §4.2.1 'fault tolerance via lineage').",
+            source=op.node_id,
+            target="system",
+            highlights=[HighlightHint(f"{op.node_id}_object_store", "modified"),
+                        HighlightHint(f"{op.node_id}_local_scheduler", "modified"),
+                        HighlightHint("GCS_object_table", "active")],
+        )
+        self._record_step(event)
+
+    def _ensure_object_alive(self, object_id: ObjectID,
+                              calling_node: NodeID,
+                              depth: int = 0) -> Optional[NodeID]:
+        """Make sure object_id exists on some living node, replaying lineage if not.
+
+        Returns the node id where the object now lives, or None if it cannot be
+        reconstructed (e.g. came from ray.put on a dead node — no lineage).
+        Used by execute_get to implement paper §4.2.1 lineage-based recovery.
+        """
+        # 1. Is it alive on a non-dead node? (GCS location may be stale.)
+        for nid, n in self.nodes.items():
+            if not n.is_dead and n.object_store.has(object_id):
+                return nid
+
+        # 2. Look up lineage in GCS object_table.
+        obj_entry = self.gcs.get_object_location(object_id)
+        if not obj_entry:
+            return None
+        producing_task = obj_entry.get("created_by")
+        if not producing_task or producing_task not in self.tasks:
+            # No lineage (e.g. ray.put on a now-dead node).
+            event = StepEvent(
+                phase=StepPhase.LINEAGE_REPLAY,
+                description=f"⚠ Object {object_id} cannot be reconstructed — no lineage",
+                detail=f"GCS has no producing task for {object_id} (it was created by ray.put "
+                       f"on a now-dead node). The paper notes ray.put values are not lineage-recoverable.",
+                source="GCS",
+                target=f"{calling_node}_driver",
+                highlights=[HighlightHint("GCS_object_table", "active")],
+            )
+            self._record_step(event)
+            return None
+
+        task_info = self.tasks[producing_task]
+        spec = task_info.spec
+
+        # 3. Announce the replay.
+        event = StepEvent(
+            phase=StepPhase.LINEAGE_REPLAY,
+            description=f"🔁 Lineage replay: re-execute {producing_task} ({spec.function_name}) to recover {object_id}",
+            detail=f"GCS object_table says {object_id} was created_by={producing_task}. "
+                   f"The GCS task_table still has the TaskSpec → Ray re-executes the task on a surviving node "
+                   f"(paper §4.2.1, Figure 11). Recursing into dependencies first if needed.",
+            source="GCS",
+            target="global_scheduler",
+            highlights=[HighlightHint("GCS_task_table", "active"),
+                        HighlightHint("GCS_object_table", "active")],
+            arrows=[ArrowHint("GCS", "global_scheduler", f"replay {producing_task}", "control", "dashed")],
+        )
+        self._record_step(event)
+
+        # 4. Recursively ensure each arg is alive.
+        for arg in spec.args:
+            self._ensure_object_alive(arg, calling_node, depth + 1)
+
+        # 5. Pick a surviving node that satisfies the resources.
+        survivors = [nid for nid, n in self.nodes.items() if not n.is_dead]
+        if not survivors:
+            return None
+        new_node_id = self.global_scheduler.select_node(spec, self.gcs, survivors) or survivors[0]
+        new_node = self.nodes[new_node_id]
+
+        # 6. Make sure args are present on the new node (replicate from living copies).
+        for arg in spec.args:
+            if new_node.object_store.has(arg):
+                continue
+            for src_id, src in self.nodes.items():
+                if not src.is_dead and src.object_store.has(arg):
+                    new_node.object_store.put(arg, src.object_store.get(arg))
+                    break
+
+        # 7. Re-execute the function and re-register the outputs.
+        new_values = self._simulate_function_execution(spec.function_name, spec.args)
+        for rid, val in zip(task_info.result_objects, new_values):
+            new_node.object_store.put(rid, val)
+            self.object_values[rid] = val
+            self.gcs.register_object(rid, new_node_id, created_by=producing_task)
+        task_info.assigned_node = new_node_id
+
+        event = StepEvent(
+            phase=StepPhase.LINEAGE_REPLAY,
+            description=f"✅ {producing_task} replayed on {new_node_id} → {task_info.result_objects} reconstructed",
+            detail=f"Re-executed {spec.function_name}({spec.args}) on {new_node_id}. "
+                   f"Result(s) {task_info.result_objects} re-registered in GCS. The downstream ray.get() "
+                   f"can now proceed transparently.",
+            source=f"{new_node_id}_worker",
+            target=f"{new_node_id}_object_store",
+            highlights=[HighlightHint(f"{new_node_id}_object_store", "new"),
+                        HighlightHint("GCS_object_table", "new")],
+            arrows=[ArrowHint(f"{new_node_id}_worker", f"{new_node_id}_object_store",
+                              f"write {task_info.result_objects}", "data"),
+                    ArrowHint(f"{new_node_id}_object_store", "GCS",
+                              f"re-register {task_info.result_objects}@{new_node_id}",
+                              "control", "dashed")],
+        )
+        self._record_step(event)
+        return new_node_id
+
     def execute_get(self, op: GetOp):
         """Execute ray.get() - retrieve the value of a future.
         
         Simplified: 1 step (local hit or fetch+return), or 2 steps (wait+fetch for pending).
         """
         node = self.nodes[op.calling_node]
-        
+
+        # If GCS says the object lives on a dead node (or is missing entirely),
+        # trigger lineage replay before proceeding.
+        loc_info_pre = self.gcs.get_object_location(op.object_id)
+        if loc_info_pre:
+            loc_node = self.nodes.get(loc_info_pre["location"])
+            if loc_node and loc_node.is_dead and not node.object_store.has(op.object_id):
+                self._ensure_object_alive(op.object_id, op.calling_node)
+
         if node.object_store.has(op.object_id):
             # Object is local — single step
             value = node.object_store.get(op.object_id)
@@ -1136,6 +1425,12 @@ class ExecutionEngine:
                     self.object_values[rid] = self.object_values.get(rid, rid)
             elif isinstance(op, GetOp):
                 self.execute_get(op)
+            elif isinstance(op, NodeFailOp):
+                self.execute_node_fail(op)
+            elif isinstance(op, BurstStart):
+                self.execute_burst_start(op)
+            elif isinstance(op, BurstEnd):
+                self.execute_burst_end(op)
         
         # Add final step
         event = StepEvent(
@@ -1199,6 +1494,7 @@ class ExecutionEngine:
             result["nodes"][nid] = {
                 "node_id": nstate.node_id,
                 "is_driver": nstate.is_driver,
+                "is_dead": nstate.is_dead,
                 "object_store": {k: str(v) for k, v in nstate.object_store.items()},
                 "local_queue": nstate.local_queue,
                 "workers": nstate.workers,

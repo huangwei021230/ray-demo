@@ -8,3 +8,5 @@ venv-ray/
 logs/
 ray_session/
 *.log
+*.pdf
+.venv-ray/
