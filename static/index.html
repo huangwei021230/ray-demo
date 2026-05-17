@@ -61,15 +61,23 @@
     <p id="step-detail-text"></p>
   </div>
 
-  <!-- Program overview: description + paper mapping -->
-  <div id="program-overview" class="program-overview hidden">
-    <div class="overview-row">
-      <span class="overview-label">场景说明</span>
-      <p id="program-description" class="overview-text"></p>
-    </div>
-    <div class="overview-row paper">
-      <span class="overview-label paper-label">📄 对应论文</span>
-      <p id="program-paper-mapping" class="overview-text"></p>
+  <!-- Program overview: description + paper mapping (collapsible) -->
+  <div id="program-overview" class="program-overview hidden collapsed">
+    <button id="btn-overview-toggle" class="overview-toggle" type="button"
+            aria-expanded="false" title="展开/收起 场景说明与论文对应">
+      <span class="overview-toggle-chevron">▸</span>
+      <span class="overview-toggle-label">场景说明 &amp; 对应论文</span>
+      <span class="overview-toggle-hint">点击展开</span>
+    </button>
+    <div class="overview-body">
+      <div class="overview-row">
+        <span class="overview-label">场景说明</span>
+        <div id="program-description" class="overview-text"></div>
+      </div>
+      <div class="overview-row paper">
+        <span class="overview-label paper-label">📄 对应论文</span>
+        <div id="program-paper-mapping" class="overview-text"></div>
+      </div>
     </div>
   </div>
 

@@ -141,7 +141,19 @@ class RayDemo {
     if (overview && descEl && mapEl) {
       descEl.innerHTML = this.renderInlineMarkdown(data.description || "");
       mapEl.innerHTML = this.renderInlineMarkdown(data.paper_mapping || "");
-      overview.classList.toggle("hidden", !data.description && !data.paper_mapping);
+      const hasContent = !!(data.description || data.paper_mapping);
+      overview.classList.toggle("hidden", !hasContent);
+      // Default to collapsed on every load so demos don't accidentally
+      // cover the architecture area.
+      overview.classList.add("collapsed");
+      const toggle = document.getElementById("btn-overview-toggle");
+      if (toggle) {
+        toggle.setAttribute("aria-expanded", "false");
+        const chev = toggle.querySelector(".overview-toggle-chevron");
+        const hint = toggle.querySelector(".overview-toggle-hint");
+        if (chev) chev.textContent = "▸";
+        if (hint) hint.textContent = "点击展开";
+      }
     }
 
     this.setControlsEnabled(true);
@@ -230,6 +242,20 @@ class RayDemo {
       btn.textContent = this.detailExpanded ? "\u25BE Details" : "\u25B8 Details";
     });
 
+    const overviewToggle = document.getElementById("btn-overview-toggle");
+    if (overviewToggle) {
+      overviewToggle.addEventListener("click", () => {
+        const overview = document.getElementById("program-overview");
+        if (!overview) return;
+        const isCollapsed = overview.classList.toggle("collapsed");
+        overviewToggle.setAttribute("aria-expanded", String(!isCollapsed));
+        overviewToggle.querySelector(".overview-toggle-chevron").textContent =
+          isCollapsed ? "\u25B8" : "\u25BE";
+        overviewToggle.querySelector(".overview-toggle-hint").textContent =
+          isCollapsed ? "\u70B9\u51FB\u5C55\u5F00" : "\u70B9\u51FB\u6536\u8D77";
+      });
+    }
+
     document.addEventListener("keydown", (e) => {
       if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
       switch (e.key) {
@@ -269,6 +295,8 @@ class RayDemo {
     esc = esc.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>");
     esc = esc.replace(/(^|[^_])_([^_\n]+)_(?!_)/g, "$1<em>$2</em>");
     esc = esc.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    // Line breaks: blank line → paragraph break, single \n → soft break.
+    esc = esc.replace(/\n{2,}/g, "<br><br>").replace(/\n/g, "<br>");
     return esc;
   }
 

@@ -331,15 +331,61 @@ body {
 
 /* ===== Program Overview (description + paper mapping) ===== */
 .program-overview {
-  padding: 8px 14px;
   background: var(--surface-alt);
   border-bottom: 1px solid var(--border-light);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
   flex-shrink: 0;
 }
 .program-overview.hidden { display: none; }
+
+.overview-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  cursor: pointer;
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  text-align: left;
+  user-select: none;
+}
+.overview-toggle:hover { background: rgba(0,0,0,0.03); }
+.overview-toggle-chevron {
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  width: 1em;
+  display: inline-block;
+}
+.overview-toggle-label { font-weight: 600; }
+.overview-toggle-hint {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+
+.overview-body {
+  padding: 8px 14px 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 360px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border-light);
+  transition: max-height 240ms ease, padding 200ms ease, opacity 180ms ease;
+  opacity: 1;
+}
+.program-overview.collapsed .overview-body {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  border-top-color: transparent;
+  opacity: 0;
+}
 
 .overview-row {
   display: flex;
@@ -354,23 +400,21 @@ body {
   letter-spacing: 0.04em;
   color: var(--text-secondary);
   white-space: nowrap;
-  min-width: 130px;
+  min-width: 88px;
   padding-top: 2px;
 }
 
-.overview-row.paper .paper-label {
-  color: #5e35b1;
-}
+.overview-row.paper .paper-label { color: #5e35b1; }
 
 .overview-text {
-  font-size: 0.78rem;
-  line-height: 1.5;
+  font-size: 0.8rem;
+  line-height: 1.7;
   color: var(--text-primary);
   margin: 0;
+  flex: 1;
 }
 
 .overview-row.paper .overview-text {
-  font-style: italic;
   color: var(--text-secondary);
 }
 
