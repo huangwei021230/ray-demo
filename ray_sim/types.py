@@ -240,6 +240,9 @@ class RemoteCallOp(ProgramOp):
     args: List[ObjectID] = field(default_factory=list)
     calling_node: NodeID = "N1"  # Which node's driver is making the call
     calling_task: Optional[TaskID] = None  # For nested calls (control edges)
+    create_result: bool = True  # Whether to create result data nodes
+    label: str = ""  # Custom label for task graph node
+    result_label: str = ""  # Custom label for result data node
 
 @dataclass
 class ActorCreateOp(ProgramOp):
@@ -249,6 +252,7 @@ class ActorCreateOp(ProgramOp):
     actor_id: ActorID = ""
     node: NodeID = ""  # If empty, scheduler decides
     calling_node: NodeID = "N1"
+    calling_task: Optional[TaskID] = None  # For control edges from parent task
 
 @dataclass
 class ActorMethodCallOp(ProgramOp):
@@ -259,6 +263,8 @@ class ActorMethodCallOp(ProgramOp):
     args: List[ObjectID] = field(default_factory=list)
     calling_node: NodeID = "N1"
     calling_task: Optional[TaskID] = None
+    label: str = ""  # Custom label for task graph node
+    result_label: str = ""  # Custom label for result data node
 
 @dataclass
 class GetOp(ProgramOp):

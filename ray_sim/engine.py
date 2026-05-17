@@ -494,7 +494,7 @@ class ExecutionEngine:
         task_id = self._next_task_id()
         result_ids = [self._next_object_id() for _ in range(
             self.functions.get(op.function_name, FunctionInfo(op.function_name)).num_returns
-        )]
+        )] if op.create_result else []
         
         task_spec = TaskSpec(
             task_id=task_id,
@@ -509,7 +509,8 @@ class ExecutionEngine:
         self.tasks[task_id] = task_info
         
         # Add task node to graph
-        self._add_graph_node(task_id, "task", f"{op.function_name}()")
+        task_label = op.label if op.label else f"{op.function_name}()"
+        self._add_graph_node(task_id, "task", task_label)
         
         # Add data edges: args → task
         for arg_id in op.args:
@@ -519,10 +520,12 @@ class ExecutionEngine:
         if op.calling_task:
             self._add_graph_edge(op.calling_task, task_id, EdgeType.CONTROL)
         
-        # Add data edges: task → results
-        for rid in result_ids:
-            self._add_graph_node(rid, "data", f"result_{rid}")
-            self._add_graph_edge(task_id, rid, EdgeType.DATA)
+        # Add data edges: task → results (only if create_result is True)
+        if op.create_result:
+            for rid in result_ids:
+                result_label = op.result_label if op.result_label else f"result_{rid}"
+                self._add_graph_node(rid, "data", result_label)
+                self._add_graph_edge(task_id, rid, EdgeType.DATA)
         
         calling_node = self.nodes[op.calling_node]
         
@@ -786,6 +789,10 @@ class ExecutionEngine:
         # Add to task graph
         self._add_graph_node(actor_id, "actor_method", f"{op.class_name}", "completed")
         
+        # Add control edge if called from a parent task
+        if op.calling_task:
+            self._add_graph_edge(op.calling_task, actor_id, EdgeType.CONTROL)
+        
         # Single step: create + register
         event = StepEvent(
             phase=StepPhase.ACTOR_CREATE,
@@ -801,6 +808,7 @@ class ExecutionEngine:
                     ArrowHint(f"{target_node_id}_actor", "GCS",
                               f"register {actor_id}", "control", "dashed")],
             new_graph_nodes=[TaskGraphNode(actor_id, "actor_method", f"{op.class_name}", "completed")],
+            new_graph_edges=[TaskGraphEdge(op.calling_task, actor_id, EdgeType.CONTROL)] if op.calling_task else [],
         )
         self._record_step(event)
         
@@ -810,7 +818,7 @@ class ExecutionEngine:
         """Execute an actor method call.
         
         Paper: "A method execution is similar to a task... but differs in that it executes
-        on a stateful worker. Stateful edges connect consecutive method invocations on the same actor."
+        on a stateful worker. Stateful edges connect the actor initialization to each method invocation."
         Merged: 2 steps — (1) call + fetch args, (2) execute + register results.
         """
         task_id = self._next_task_id()
@@ -840,15 +848,16 @@ class ExecutionEngine:
         self.tasks[task_id] = task_info
         
         # Add to task graph
-        self._add_graph_node(task_id, "actor_method", f"{op.method_name}()")
+        task_label = op.label if op.label else f"{op.method_name}()"
+        self._add_graph_node(task_id, "actor_method", task_label)
         
         # Data edges: args → task
         for arg_id in op.args:
             self._add_graph_edge(arg_id, task_id, EdgeType.DATA)
         
-        # Stateful edge: from previous method on same actor
-        if actor_info.last_method_task:
-            self._add_graph_edge(actor_info.last_method_task, task_id, EdgeType.STATEFUL)
+        # Stateful edge: from previous method (or actor init if first method) to current method
+        stateful_source = actor_info.last_method_task if actor_info.last_method_task else actor_info.actor_id
+        self._add_graph_edge(stateful_source, task_id, EdgeType.STATEFUL)
         
         # Control edge if nested
         if op.calling_task:
@@ -856,7 +865,8 @@ class ExecutionEngine:
         
         # Data edges: task → results
         for rid in result_ids:
-            self._add_graph_node(rid, "data", f"result")
+            result_label = op.result_label if op.result_label else f"result"
+            self._add_graph_node(rid, "data", result_label)
             self._add_graph_edge(task_id, rid, EdgeType.DATA)
         
         target_node = self.nodes[target_node_id]
@@ -876,9 +886,7 @@ class ExecutionEngine:
             target_node.object_store.put(arg_id, value)
         
         # Step 1: Actor method call + fetch args
-        stateful_info = ""
-        if actor_info.last_method_task:
-            stateful_info = f" Stateful edge: {actor_info.last_method_task} → {task_id}."
+        stateful_info = f" Stateful edge: {stateful_source} → {task_id}."
         
         fetch_info = ""
         if missing_args:
@@ -895,8 +903,7 @@ class ExecutionEngine:
             arrows=[ArrowHint(f"{op.calling_node}_driver", f"{target_node_id}_actor",
                               f"call {op.method_name}()", "control")],
             new_graph_nodes=[TaskGraphNode(task_id, "actor_method", f"{op.method_name}()", "pending")],
-            new_graph_edges=([TaskGraphEdge(actor_info.last_method_task, task_id, EdgeType.STATEFUL)]
-                           if actor_info.last_method_task else []) +
+            new_graph_edges=[TaskGraphEdge(stateful_source, task_id, EdgeType.STATEFUL)] +
                            ([TaskGraphEdge(op.calling_task, task_id, EdgeType.CONTROL)]
                            if op.calling_task else []),
         )

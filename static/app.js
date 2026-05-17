@@ -1150,10 +1150,18 @@ class RayDemo {
 
     for (var lv = 0; lv <= maxLvl; lv++) {
       var grp = groups[lv] || [];
+      // Sort: keep related nodes together by grouping by their primary incoming source
       grp.sort(function(a, b) {
-        var ta = nodes[a].type === "data" ? 0 : 1;
-        var tb = nodes[b].type === "data" ? 0 : 1;
-        return ta - tb || a.localeCompare(b);
+        var ndA = nodes[a], ndB = nodes[b];
+        // Tasks/actors first, then data
+        var typeOrderA = ndA.type === "data" ? 1 : 0;
+        var typeOrderB = ndB.type === "data" ? 1 : 0;
+        if (typeOrderA !== typeOrderB) return typeOrderA - typeOrderB;
+        // Group by primary incoming source to keep siblings together
+        var srcA = incoming[a].length > 0 ? incoming[a][0] : a;
+        var srcB = incoming[b].length > 0 ? incoming[b][0] : b;
+        if (srcA !== srcB) return srcA.localeCompare(srcB);
+        return a.localeCompare(b);
       });
 
       var nodeWidths = [];

@@ -70,7 +70,20 @@ def create_rl_example() -> RayProgram:
     - @ray.remote def train_policy()
 
     Shows: actors, stateful edges, nested remote calls, dynamic task graph.
-    We model one iteration of the training loop with 2 simulators.
+    We model two iterations of the training loop with 2 simulators.
+
+    Task graph structure (matching paper Figure 2):
+    - T0 (train_policy) is the top-level task that controls everything
+    - T1 (create_policy) creates initial policy
+    - A10, A20 are Simulator actors
+    - A11, A21 are first rollout iterations
+    - A12, A22 are second rollout iterations
+    - T2, T3 are update_policy calls
+
+    Edges:
+    - Control edges: T0 → {A10, A20, T1, A11, A21}
+    - Data edges: T1→policy1, policy1→{A11,A21}, A11→rollout11, etc.
+    - Stateful edges: A10→{A11,A12}, A20→{A21,A22} (from actor init to methods)
     """
     return RayProgram(
         name="RL Training — Paper Figure 2",
@@ -109,62 +122,102 @@ def create_rl_example() -> RayProgram:
                 num_returns=1,
                 resources={"CPU": 1},
             ),
-            # train_policy() body:
-            # 1. Create policy
+            # === T0: train_policy() — top-level task ===
+            # This creates task_0 which will be T0
+            # create_result=False because T0 is a control task with no data output
+            RemoteCallOp(
+                function_name="train_policy",
+                args=[],
+                calling_node="N1",
+                create_result=False,
+                label="T0: train_policy",
+            ),
+            # === T0's body: all subsequent calls have calling_task="task_0" ===
+            # 1. T1: create_policy() — creates initial policy (policy1 = obj_0)
             RemoteCallOp(
                 function_name="create_policy",
                 args=[],
                 calling_node="N1",
-                calling_task=None,
+                calling_task="task_0",  # Control edge: T0 → T1
+                label="T1: create_policy",
+                result_label="policy1",
             ),
-            # policy_id is obj_0
-            # 2. Create simulator actors
+            # 2. A10, A20: Create simulator actors
             ActorCreateOp(
                 class_name="Simulator",
-                actor_id="sim1",
+                actor_id="A10",  # Actor 1
                 calling_node="N1",
+                calling_task="task_0",  # Control edge: T0 → A10
             ),
             ActorCreateOp(
                 class_name="Simulator",
-                actor_id="sim2",
+                actor_id="A20",  # Actor 2
                 calling_node="N2",
+                calling_task="task_0",  # Control edge: T0 → A20
             ),
-            # 3. Run rollouts on each actor (parallel) — iteration 1
+            # 3. A11, A21: First rollout iteration
+            # Stateful edges: A10→A11, A20→A21 (created automatically by engine)
+            # Data edges: policy1(obj_0) → A11, A11 → rollout11(obj_1)
             ActorMethodCallOp(
-                actor_id="sim1",
+                actor_id="A10",
                 method_name="rollout",
-                args=["obj_0"],  # policy
+                args=["obj_0"],  # policy1
                 calling_node="N1",
+                calling_task="task_0",  # Control edge: T0 → A11
+                label="A11: rollout",
+                result_label="rollout11",
             ),
             ActorMethodCallOp(
-                actor_id="sim2",
+                actor_id="A20",
                 method_name="rollout",
-                args=["obj_0"],  # policy
-                # calling_node="N1",
-            ),
-            # 3b. Run rollouts on each actor — iteration 2
-            # This creates STATEFUL EDGES: sim1.rollout[2] depends on sim1.rollout[1]
-            ActorMethodCallOp(
-                actor_id="sim1",
-                method_name="rollout",
-                args=["obj_0"],  # same policy
+                args=["obj_0"],  # policy1
                 calling_node="N1",
+                calling_task="task_0",  # Control edge: T0 → A21
+                label="A21: rollout",
+                result_label="rollout21",
             ),
-            ActorMethodCallOp(
-                actor_id="sim2",
-                method_name="rollout",
-                args=["obj_0"],  # same policy
-                # calling_node="N1",
-            ),
-            # 4. Update policy with rollout results
-            # obj_0 from create_policy, obj_2 from sim1.rollout[1], obj_3 from sim2.rollout[1]
-            # obj_4 from sim1.rollout[2], obj_5 from sim2.rollout[2]
+            # 4. T2: First update_policy
+            # Data edges: policy1(obj_0), rollout11(obj_1), rollout21(obj_2) → T2
+            # T2 → policy2(obj_3)
             RemoteCallOp(
                 function_name="update_policy",
-                args=["obj_0", "obj_2", "obj_3", "obj_4", "obj_5"],
+                args=["obj_0", "obj_1", "obj_2"],  # policy1, rollout11, rollout21
                 calling_node="N1",
+                label="T2: update_policy",
+                result_label="policy2",
             ),
-            # 5. Get the final result
+            # 5. A12, A22: Second rollout iteration
+            # Stateful edges: A11→A12, A21→A22 (created automatically by engine)
+            # Data edges: policy2(obj_3) → A12, A12 → rollout12(obj_4)
+            ActorMethodCallOp(
+                actor_id="A10",
+                method_name="rollout",
+                args=["obj_3"],  # policy2
+                calling_node="N1",
+                calling_task="task_0",  # Control edge: T0 → A12
+                label="A12: rollout",
+                result_label="rollout12",
+            ),
+            ActorMethodCallOp(
+                actor_id="A20",
+                method_name="rollout",
+                args=["obj_3"],  # policy2
+                calling_node="N1",
+                calling_task="task_0",  # Control edge: T0 → A22
+                label="A22: rollout",
+                result_label="rollout22",
+            ),
+            # 6. T3: Second update_policy
+            # Data edges: policy2(obj_3), rollout12(obj_4), rollout22(obj_5) → T3
+            # T3 → policy3(obj_6)
+            RemoteCallOp(
+                function_name="update_policy",
+                args=["obj_3", "obj_4", "obj_5"],  # policy2, rollout12, rollout22
+                calling_node="N1",
+                label="T3: update_policy",
+                result_label="policy3",
+            ),
+            # 7. Get the final result
             GetOp(object_id="obj_6", calling_node="N1"),
         ],
     )
