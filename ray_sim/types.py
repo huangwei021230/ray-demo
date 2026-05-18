@@ -191,6 +191,7 @@ class GCSState:
     
     Per the paper, GCS stores:
     - Object Table: object locations and sizes
+    - Task Table: task status and node assignments
     - Function Table: registered functions
     - Actor Table: actor state
     """
@@ -250,6 +251,7 @@ class RemoteCallOp(ProgramOp):
     args: List[ObjectID] = field(default_factory=list)
     calling_node: NodeID = "N1"  # Which node's driver is making the call
     calling_task: Optional[TaskID] = None  # For nested calls (control edges)
+    parent_task: Optional[TaskID] = None  # Task that this call is nested within
     create_result: bool = True  # Whether to create result data nodes
     label: str = ""  # Custom label for task graph node
     result_label: str = ""  # Custom label for result data node
@@ -264,6 +266,7 @@ class ActorCreateOp(ProgramOp):
     node: NodeID = ""  # If empty, scheduler decides
     calling_node: NodeID = "N1"
     calling_task: Optional[TaskID] = None  # For control edges from parent task
+    parent_task: Optional[TaskID] = None  # Task that this call is nested within
 
 @dataclass
 class ActorMethodCallOp(ProgramOp):
@@ -274,6 +277,7 @@ class ActorMethodCallOp(ProgramOp):
     args: List[ObjectID] = field(default_factory=list)
     calling_node: NodeID = "N1"
     calling_task: Optional[TaskID] = None
+    parent_task: Optional[TaskID] = None  # Task that this call is nested within
     label: str = ""  # Custom label for task graph node
     result_label: str = ""  # Custom label for result data node
 

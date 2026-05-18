@@ -164,28 +164,35 @@ def create_rl_example() -> RayProgram:
                 create_result=False,
                 label="T0: train_policy",
             ),
-            # === T0's body: all subsequent calls have calling_task="task_0" ===
+            # === T0's body: all subsequent calls are nested within T0 ===
+            # These calls are made from within train_policy, not from the driver
             # 1. T1: create_policy() — creates initial policy (policy1 = obj_0)
             RemoteCallOp(
                 function_name="create_policy",
                 args=[],
                 calling_node="N1",
                 calling_task="task_0",  # Control edge: T0 → T1
+                parent_task="task_0",  # Nested within T0
                 label="T1: create_policy",
                 result_label="policy1",
             ),
             # 2. A10, A20: Create simulator actors
+            # A10 on N2 (GPU×2), A20 on N3 (GPU×1) — distributed across nodes
             ActorCreateOp(
                 class_name="Simulator",
-                actor_id="A10",  # Actor 1
+                actor_id="A10",  # Actor 1 on N2
+                node="N2",
                 calling_node="N1",
                 calling_task="task_0",  # Control edge: T0 → A10
+                parent_task="task_0",  # Nested within T0
             ),
             ActorCreateOp(
                 class_name="Simulator",
-                actor_id="A20",  # Actor 2
-                calling_node="N2",
+                actor_id="A20",  # Actor 2 on N3
+                node="N3",
+                calling_node="N1",
                 calling_task="task_0",  # Control edge: T0 → A20
+                parent_task="task_0",  # Nested within T0
             ),
             # 3. A11, A21: First rollout iteration
             # Stateful edges: A10→A11, A20→A21 (created automatically by engine)
@@ -196,6 +203,7 @@ def create_rl_example() -> RayProgram:
                 args=["obj_0"],  # policy1
                 calling_node="N1",
                 calling_task="task_0",  # Control edge: T0 → A11
+                parent_task="task_0",  # Nested within T0
                 label="A11: rollout",
                 result_label="rollout11",
             ),
@@ -205,6 +213,7 @@ def create_rl_example() -> RayProgram:
                 args=["obj_0"],  # policy1
                 calling_node="N1",
                 calling_task="task_0",  # Control edge: T0 → A21
+                parent_task="task_0",  # Nested within T0
                 label="A21: rollout",
                 result_label="rollout21",
             ),
@@ -215,6 +224,7 @@ def create_rl_example() -> RayProgram:
                 function_name="update_policy",
                 args=["obj_0", "obj_1", "obj_2"],  # policy1, rollout11, rollout21
                 calling_node="N1",
+                parent_task="task_0",  # Nested within T0
                 label="T2: update_policy",
                 result_label="policy2",
             ),
@@ -227,6 +237,7 @@ def create_rl_example() -> RayProgram:
                 args=["obj_3"],  # policy2
                 calling_node="N1",
                 calling_task="task_0",  # Control edge: T0 → A12
+                parent_task="task_0",  # Nested within T0
                 label="A12: rollout",
                 result_label="rollout12",
             ),
@@ -236,6 +247,7 @@ def create_rl_example() -> RayProgram:
                 args=["obj_3"],  # policy2
                 calling_node="N1",
                 calling_task="task_0",  # Control edge: T0 → A22
+                parent_task="task_0",  # Nested within T0
                 label="A22: rollout",
                 result_label="rollout22",
             ),
@@ -246,6 +258,7 @@ def create_rl_example() -> RayProgram:
                 function_name="update_policy",
                 args=["obj_3", "obj_4", "obj_5"],  # policy2, rollout12, rollout22
                 calling_node="N1",
+                parent_task="task_0",  # Nested within T0
                 label="T3: update_policy",
                 result_label="policy3",
             ),

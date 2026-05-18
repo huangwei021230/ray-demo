@@ -23,10 +23,7 @@ class GlobalControlStore:
     
     A key-value store with pub-sub functionality.
     Uses sharding for scale and chain replication for fault tolerance.
-    Stores: Object Table, Function Table, Actor Table.
-    
-    Note: Task Table is NOT in GCS per the paper. Task scheduling state
-    is managed by local schedulers and the global scheduler.
+    Stores: Object Table, Task Table, Function Table, Actor Table.
     
     Key design: enables every component in the system to be stateless.
     """
@@ -589,8 +586,10 @@ class ExecutionEngine:
         
         calling_node = self.nodes[op.calling_node]
         
-        # ---- Step 1: Driver submits task to local scheduler ----
+        # ---- Step 1: Driver/parent task submits task to local scheduler ----
         task_info.status = TaskStatus.READY
+        
+        # Register task in GCS
         self.gcs.register_task(task_id, {
             "function": op.function_name,
             "args": op.args,
@@ -598,16 +597,26 @@ class ExecutionEngine:
             "node": None,
         })
         
+        # Determine the source of the call (driver or parent task)
+        source_label = f"{op.calling_node}_driver"
+        if op.parent_task and op.parent_task in self.tasks:
+            source_label = f"{op.calling_node}_worker"  # Parent task is running on a worker
+        
+        submit_description = f"Driver calls {op.function_name}.remote({', '.join(op.args)}) → creates {task_id}"
+        if op.parent_task:
+            submit_description = f"Nested call: {op.function_name}.remote({', '.join(op.args)}) → creates {task_id}"
+        
         event = StepEvent(
             phase=StepPhase.TASK_SUBMIT,
-            description=f"Driver calls {op.function_name}.remote({', '.join(op.args)}) → creates {task_id}",
-            detail=f"Driver on {op.calling_node} invokes {op.function_name}.remote() with args {op.args}. "
+            description=submit_description,
+            detail=f"{'Nested within ' + op.parent_task + '. ' if op.parent_task else ''}"
+                   f"{op.function_name}.remote() invoked on {op.calling_node} with args {op.args}. "
                    f"A TaskSpec is created (task_id={task_id}) and submitted to {op.calling_node}'s local scheduler. "
                    f"The call immediately returns futures: {result_ids}.",
-            source=f"{op.calling_node}_driver",
+            source=source_label,
             target=f"{op.calling_node}_local_scheduler",
             highlights=[HighlightHint(f"{op.calling_node}_local_scheduler", "active")],
-            arrows=[ArrowHint(f"{op.calling_node}_driver", f"{op.calling_node}_local_scheduler",
+            arrows=[ArrowHint(source_label, f"{op.calling_node}_local_scheduler",
                               f"submit {task_id}", "control")],
             new_graph_nodes=[TaskGraphNode(task_id, "task", f"{op.function_name}()", "pending")],
             new_graph_edges=[TaskGraphEdge(arg, task_id, EdgeType.DATA) for arg in op.args] +
@@ -836,19 +845,21 @@ class ExecutionEngine:
         
         complete_event = StepEvent(
             phase=StepPhase.TASK_EXECUTE,
-            description=f"Worker {worker_id} completes {op.function_name}() → {result_ids} registered in GCS",
-            detail=f"Worker {worker_id} on {selected_node} finishes executing {op.function_name}(), "
-                   f"stores results {result_ids} in local object store, and registers them in GCS. "
-                   f"Worker is now idle. Results: {dict(zip(result_ids, result_values))}",
+            description=f"Worker {worker_id} completes {op.function_name}()" + 
+                       (f" → {result_ids} registered in GCS" if result_ids else ""),
+            detail=f"Worker {worker_id} on {selected_node} finishes executing {op.function_name}(). " +
+                   (f"Stores results {result_ids} in local object store and registers them in GCS. "
+                    f"Results: {dict(zip(result_ids, result_values))}" if result_ids else "No return values.") +
+                   " Worker is now idle.",
             source=f"{selected_node}_worker",
-            target=f"{selected_node}_object_store",
-            highlights=[HighlightHint(f"{selected_node}_worker", "active"),
-                       HighlightHint(f"{selected_node}_object_store", "new"),
-                       HighlightHint("GCS_object_table", "new")],
-            arrows=[ArrowHint(f"{selected_node}_worker", f"{selected_node}_object_store",
+            target=f"{selected_node}_object_store" if result_ids else f"{selected_node}_worker",
+            highlights=[HighlightHint(f"{selected_node}_worker", "active")] +
+                      ([HighlightHint(f"{selected_node}_object_store", "new"),
+                        HighlightHint("GCS_object_table", "new")] if result_ids else []),
+            arrows=([ArrowHint(f"{selected_node}_worker", f"{selected_node}_object_store",
                               f"write {result_ids}", "data"),
-                    ArrowHint(f"{selected_node}_object_store", "GCS",
-                              f"register {result_ids}", "control", "dashed")],
+                     ArrowHint(f"{selected_node}_object_store", "GCS",
+                              f"register {result_ids}", "control", "dashed")] if result_ids else []),
             new_graph_nodes=[TaskGraphNode(rid, "data", f"result", "completed") for rid in result_ids],
             new_graph_edges=[TaskGraphEdge(task_id, rid, EdgeType.DATA) for rid in result_ids],
             data_changes={"gcs_object_table_add": {rid: {"location": selected_node, "size": 100} for rid in result_ids}},
@@ -858,16 +869,35 @@ class ExecutionEngine:
     def execute_actor_create(self, op: ActorCreateOp) -> ActorID:
         """Create an actor instance.
         
-        Paper: "An actor is explicitly instantiated by a worker or a driver."
-        Merged: creation + GCS registration in a single step.
+        Paper: Actor creation follows the same scheduling flow as tasks:
+        1. Driver submits to local scheduler
+        2. Local scheduler forwards to global scheduler
+        3. Global scheduler selects best node (or uses specified node)
+        4. Target node creates the actor
         """
         actor_id = op.actor_id if op.actor_id else self._next_actor_id()
         
+        func_info = self.functions.get(op.class_name, FunctionInfo(op.class_name))
+        
+        # ---- Step 1: Driver submits to local scheduler ----
+        submit_event = StepEvent(
+            phase=StepPhase.TASK_SUBMIT,
+            description=f"Driver submits {op.class_name}.remote() → create {actor_id}",
+            detail=f"Driver on {op.calling_node} wants to create an instance of {op.class_name}. "
+                   f"Submitted to {op.calling_node}'s local scheduler.",
+            source=f"{op.calling_node}_driver",
+            target=f"{op.calling_node}_local_scheduler",
+            highlights=[HighlightHint(f"{op.calling_node}_local_scheduler", "active")],
+            arrows=[ArrowHint(f"{op.calling_node}_driver", f"{op.calling_node}_local_scheduler",
+                              f"submit create {actor_id}", "control")],
+        )
+        self._record_step(submit_event)
+        
+        # ---- Step 2: Local scheduler forwards to global scheduler ----
         # Determine which node the actor will be on
         if op.node:
             target_node_id = op.node
         else:
-            func_info = self.functions.get(op.class_name, FunctionInfo(op.class_name))
             available = list(self.nodes.keys())
             target_node_id = self.global_scheduler.select_node(
                 TaskSpec(task_id="actor_create", function_name=op.class_name,
@@ -875,11 +905,27 @@ class ExecutionEngine:
                 self.gcs, available
             ) or available[0]
         
+        forward_event = StepEvent(
+            phase=StepPhase.GLOBAL_SCHEDULE,
+            description=f"{op.calling_node} forwards → global scheduler selects {target_node_id} for {actor_id}",
+            detail=f"Local scheduler forwards actor creation to global scheduler. "
+                   f"Global scheduler selects {target_node_id} "
+                   f"(has GPU resources for {op.class_name}).",
+            source=f"{op.calling_node}_local_scheduler",
+            target=f"{target_node_id}_local_scheduler",
+            highlights=[HighlightHint("global_scheduler", "active"), HighlightHint(f"{target_node_id}_local_scheduler", "new")],
+            arrows=[ArrowHint(f"{op.calling_node}_local_scheduler", "global_scheduler",
+                              f"forward create {actor_id}", "control"),
+                    ArrowHint("global_scheduler", f"{target_node_id}_local_scheduler",
+                              f"assign {actor_id}", "control")],
+        )
+        self._record_step(forward_event)
+        
+        # ---- Step 3: Target node creates the actor ----
         target_node = self.nodes[target_node_id]
         target_node.actors.append(actor_id)
         
         # Register actor with GCS
-        func_info = self.functions.get(op.class_name, FunctionInfo(op.class_name))
         actor_info = ActorInfo(
             actor_id=actor_id,
             class_name=op.class_name,
@@ -906,33 +952,33 @@ class ExecutionEngine:
         if op.calling_task:
             self._add_graph_edge(op.calling_task, actor_id, EdgeType.CONTROL)
         
-        # Single step: create + register
-        event = StepEvent(
+        create_event = StepEvent(
             phase=StepPhase.ACTOR_CREATE,
-            description=f"Driver creates actor {op.class_name}.remote() → {actor_id} on {target_node_id}",
-            detail=f"Driver on {op.calling_node} creates an instance of {op.class_name}. "
-                   f"The actor is placed on {target_node_id} and registered in the GCS Actor Table. "
+            description=f"{target_node_id} creates actor {actor_id} ({op.class_name})",
+            detail=f"Actor {actor_id} is created on {target_node_id} and registered in GCS Actor Table. "
                    f"It exposes methods: {', '.join(func_info.actor_methods)}.",
-            source=f"{op.calling_node}_driver",
+            source=f"{target_node_id}_local_scheduler",
             target=f"{target_node_id}_actor",
             highlights=[HighlightHint(f"{target_node_id}_actor", "new"), HighlightHint("GCS_actor_table", "new")],
-            arrows=[ArrowHint(f"{op.calling_node}_driver", f"{target_node_id}_actor",
+            arrows=[ArrowHint(f"{target_node_id}_local_scheduler", f"{target_node_id}_actor",
                               f"create {actor_id}", "control"),
                     ArrowHint(f"{target_node_id}_actor", "GCS",
                               f"register {actor_id}", "control", "dashed")],
             new_graph_nodes=[TaskGraphNode(actor_id, "actor_method", f"{op.class_name}", "completed")],
             new_graph_edges=[TaskGraphEdge(op.calling_task, actor_id, EdgeType.CONTROL)] if op.calling_task else [],
         )
-        self._record_step(event)
+        self._record_step(create_event)
         
         return actor_id
     
     def execute_actor_method(self, op: ActorMethodCallOp) -> List[ObjectID]:
         """Execute an actor method call.
         
-        Paper: "A method execution is similar to a task... but differs in that it executes
-        on a stateful worker. Stateful edges connect the actor initialization to each method invocation."
-        Merged: 2 steps — (1) call + fetch args, (2) execute + register results.
+        Paper: Actor method calls follow the same scheduling flow as tasks:
+        1. Driver submits to local scheduler
+        2. Local scheduler forwards to global scheduler (because actor has node constraint)
+        3. Global scheduler assigns to the actor's node
+        4. Target node's local scheduler dispatches to actor worker
         """
         task_id = self._next_task_id()
         result_ids = [self._next_object_id()]
@@ -940,6 +986,193 @@ class ExecutionEngine:
         actor_info = self.actors_info.get(op.actor_id)
         if not actor_info:
             return result_ids
+        
+        # Actor methods MUST run on the actor's node
+        target_node_id = actor_info.node_id
+        
+        task_spec = TaskSpec(
+            task_id=task_id,
+            function_name=f"{op.actor_id}.{op.method_name}",
+            args=op.args,
+            num_returns=1,
+            resources={"CPU": 1},
+            is_actor_method=True,
+            actor_id=op.actor_id,
+            calling_task=op.calling_task,
+            node_constraint=target_node_id,
+        )
+        
+        task_info = TaskInfo(spec=task_spec, status=TaskStatus.PENDING,
+                            result_objects=result_ids, assigned_node=target_node_id)
+        self.tasks[task_id] = task_info
+        
+        # Register task in GCS
+        self.gcs.register_task(task_id, {
+            "function": f"{op.actor_id}.{op.method_name}",
+            "args": op.args,
+            "status": "pending",
+            "node": None,
+        })
+        
+        # Add to task graph
+        task_label = op.label if op.label else f"{op.method_name}()"
+        self._add_graph_node(task_id, "actor_method", task_label)
+        
+        # Data edges: args → task
+        for arg_id in op.args:
+            self._add_graph_edge(arg_id, task_id, EdgeType.DATA)
+        
+        # Stateful edge: from previous method (or actor init if first method) to current method
+        stateful_source = actor_info.last_method_task if actor_info.last_method_task else actor_info.actor_id
+        self._add_graph_edge(stateful_source, task_id, EdgeType.STATEFUL)
+        
+        # Control edge if nested
+        if op.calling_task:
+            self._add_graph_edge(op.calling_task, task_id, EdgeType.CONTROL)
+        
+        # Data edges: task → results
+        for rid in result_ids:
+            result_label = op.result_label if op.result_label else f"result"
+            self._add_graph_node(rid, "data", result_label)
+            self._add_graph_edge(task_id, rid, EdgeType.DATA)
+        
+        calling_node = self.nodes[op.calling_node]
+        
+        # ---- Step 1: Driver submits to local scheduler ----
+        stateful_info = f" Stateful edge: {stateful_source} → {task_id}."
+        
+        submit_event = StepEvent(
+            phase=StepPhase.TASK_SUBMIT,
+            description=f"Call {op.actor_id}.{op.method_name}() → {task_id}",
+            detail=f"Driver on {op.calling_node} invokes {op.actor_id}.{op.method_name}(). "
+                   f"The call is submitted to {op.calling_node}'s local scheduler.{stateful_info}",
+            source=f"{op.calling_node}_driver",
+            target=f"{op.calling_node}_local_scheduler",
+            highlights=[HighlightHint(f"{op.calling_node}_local_scheduler", "active")],
+            arrows=[ArrowHint(f"{op.calling_node}_driver", f"{op.calling_node}_local_scheduler",
+                              f"submit {task_id}", "control")],
+        )
+        self._record_step(submit_event)
+        
+        # ---- Step 2: Local scheduler forwards to global scheduler ----
+        # Actor methods always need forwarding because they have node constraints
+        self.global_scheduler.enqueue(task_id)
+        
+        # Query GCS for arg locations
+        arg_locations = {}
+        for arg_id in op.args:
+            loc = self.gcs.get_object_location(arg_id)
+            if loc:
+                arg_locations[arg_id] = loc["location"]
+        
+        forward_event = StepEvent(
+            phase=StepPhase.GLOBAL_SCHEDULE,
+            description=f"{op.calling_node} forwards {task_id} → global scheduler assigns to {target_node_id}",
+            detail=f"Local scheduler on {op.calling_node} forwards actor method {task_id} to global scheduler "
+                   f"(actor {op.actor_id} is bound to {target_node_id}). "
+                   f"Global scheduler assigns to {target_node_id}.",
+            source=f"{op.calling_node}_local_scheduler",
+            target=f"{target_node_id}_local_scheduler",
+            highlights=[HighlightHint("global_scheduler", "active"), HighlightHint(f"{target_node_id}_local_scheduler", "new")],
+            arrows=[ArrowHint(f"{op.calling_node}_local_scheduler", "global_scheduler",
+                              f"forward {task_id}", "control"),
+                    ArrowHint("global_scheduler", f"{target_node_id}_local_scheduler",
+                              f"assign {task_id}", "control")],
+        )
+        self._record_step(forward_event)
+        
+        # Dequeue from global, enqueue into target node
+        self.global_scheduler.dequeue(task_id)
+        target_node = self.nodes[target_node_id]
+        target_node.local_scheduler.enqueue(task_id)
+        self.global_scheduler.update_node_load(
+            target_node_id, max(len(target_node.local_scheduler.task_queue), target_node.local_scheduler.admitted_recent),
+            target_node.local_scheduler.available_resources)
+        
+        # ---- Step 3: Fetch missing args ----
+        missing_args = [arg_id for arg_id in op.args if not target_node.object_store.has(arg_id)]
+        fetch_events = []
+        for arg_id in missing_args:
+            loc_info = self.gcs.get_object_location(arg_id)
+            source_node_id = loc_info["location"] if loc_info else op.calling_node
+            value = self.nodes[source_node_id].object_store.get(arg_id)
+            target_node.object_store.put(arg_id, value)
+            
+            fetch_events.append(StepEvent(
+                phase=StepPhase.DATA_FETCH,
+                description=f"{target_node_id} fetches missing arg: {arg_id} from {source_node_id}",
+                detail=f"{target_node_id}'s object store doesn't have {arg_id}. "
+                       f"Looks up GCS → found at {source_node_id}. Replicates locally.",
+                source=f"{source_node_id}_object_store",
+                target=f"{target_node_id}_object_store",
+                highlights=[HighlightHint(f"{target_node_id}_object_store", "modified"),
+                           HighlightHint("GCS_object_table", "active")],
+                arrows=[ArrowHint(f"{target_node_id}_object_store", "GCS",
+                                  f"lookup {arg_id}", "control", "dashed"),
+                        ArrowHint(f"{source_node_id}_object_store", f"{target_node_id}_object_store",
+                                  f"replicate {arg_id}", "data")],
+            ))
+        
+        if fetch_events:
+            self._record_step(fetch_events[0])
+        
+        # ---- Step 4: Local scheduler dispatches to actor worker ----
+        target_node.local_scheduler.dequeue()
+        self.global_scheduler.update_node_load(
+            target_node_id, max(len(target_node.local_scheduler.task_queue), target_node.local_scheduler.admitted_recent),
+            target_node.local_scheduler.available_resources)
+        
+        actor_worker = target_node.workers[0] if target_node.workers else f"{target_node_id}_worker_0"
+        target_node.worker_tasks[actor_worker] = task_id
+        task_info.status = TaskStatus.RUNNING
+        self._graph_nodes[task_id].status = "running"
+        
+        dispatch_event = StepEvent(
+            phase=StepPhase.ACTOR_METHOD,
+            description=f"Local scheduler on {target_node_id} dispatches {task_id} → {actor_worker}",
+            detail=f"The local scheduler dispatches actor method {op.method_name}() to {actor_worker}.",
+            source=f"{target_node_id}_local_scheduler",
+            target=f"{target_node_id}_actor",
+            highlights=[HighlightHint(f"{target_node_id}_actor", "active"),
+                       HighlightHint(f"{target_node_id}_local_scheduler", "active")],
+            arrows=[ArrowHint(f"{target_node_id}_local_scheduler", f"{target_node_id}_actor",
+                              f"dispatch {task_id}", "control")],
+        )
+        self._record_step(dispatch_event)
+        
+        # ---- Step 5: Worker executes and stores results ----
+        target_node.worker_tasks[actor_worker] = None
+        
+        task_info.status = TaskStatus.COMPLETED
+        self._graph_nodes[task_id].status = "completed"
+        
+        for rid, rval in zip(result_ids, [f"<rollout_result>"]):
+            target_node.object_store.put(rid, rval)
+            self.object_values[rid] = rval
+            self.gcs.register_object(rid, target_node_id, created_by=task_id)
+            self._graph_nodes[rid].status = "completed"
+        
+        actor_info.last_method_task = task_id
+        self.gcs.update_actor_last_method(op.actor_id, task_id)
+        
+        complete_event = StepEvent(
+            phase=StepPhase.ACTOR_METHOD,
+            description=f"Actor {op.actor_id}.{op.method_name}() completes → {result_ids}",
+            detail=f"Worker {actor_worker} finishes {op.method_name}(), stores result in local object store, "
+                   f"registers in GCS. Actor state updated.",
+            source=f"{target_node_id}_actor",
+            target=f"{target_node_id}_object_store",
+            highlights=[HighlightHint(f"{target_node_id}_actor", "active"),
+                       HighlightHint(f"{target_node_id}_object_store", "new"),
+                       HighlightHint("GCS_object_table", "new")],
+            arrows=[ArrowHint(f"{target_node_id}_actor", f"{target_node_id}_object_store",
+                              f"store {result_ids[0]}", "data"),
+                    ArrowHint(f"{target_node_id}_object_store", "GCS",
+                              f"register {result_ids[0]}", "control", "dashed")],
+        )
+        self._record_step(complete_event)
+        
+        return result_ids
         
         # Actor methods MUST run on the actor's node
         target_node_id = actor_info.node_id
@@ -1416,8 +1649,22 @@ class ExecutionEngine:
         self.initialize_cluster(program.num_nodes, program.node_labels,
                                program.node_resources, program.driver_node)
         
+        # Track parent tasks that are still running
+        running_parent_tasks = set()
+        
         # Execute each operation
         for op in program.operations:
+            # If this operation has a parent_task, mark parent as running
+            if hasattr(op, 'parent_task') and op.parent_task:
+                if op.parent_task in self.tasks:
+                    parent_task_info = self.tasks[op.parent_task]
+                    if parent_task_info.status == TaskStatus.COMPLETED:
+                        # Revert parent to running state for nested calls
+                        parent_task_info.status = TaskStatus.RUNNING
+                        if op.parent_task in self._graph_nodes:
+                            self._graph_nodes[op.parent_task].status = "running"
+                    running_parent_tasks.add(op.parent_task)
+            
             if isinstance(op, RegisterFunction):
                 self.execute_register_function(op)
             elif isinstance(op, RegisterActorClass):
@@ -1443,6 +1690,25 @@ class ExecutionEngine:
                 self.execute_burst_start(op)
             elif isinstance(op, BurstEnd):
                 self.execute_burst_end(op)
+            
+            # Check if this was the last nested call for a parent task
+            if hasattr(op, 'parent_task') and op.parent_task:
+                # Check if there are more operations with the same parent_task
+                current_idx = program.operations.index(op)
+                has_more_nested = False
+                for next_op in program.operations[current_idx + 1:]:
+                    if hasattr(next_op, 'parent_task') and next_op.parent_task == op.parent_task:
+                        has_more_nested = True
+                        break
+                
+                if not has_more_nested:
+                    # No more nested calls, mark parent as completed
+                    if op.parent_task in self.tasks:
+                        parent_task_info = self.tasks[op.parent_task]
+                        parent_task_info.status = TaskStatus.COMPLETED
+                        if op.parent_task in self._graph_nodes:
+                            self._graph_nodes[op.parent_task].status = "completed"
+                    running_parent_tasks.discard(op.parent_task)
         
         # Add final step
         event = StepEvent(
