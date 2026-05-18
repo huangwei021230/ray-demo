@@ -268,129 +268,129 @@ def create_rl_example() -> RayProgram:
     )
 
 
-def create_simple_local_example() -> RayProgram:
-    """Local scheduling — the bottom-up common case."""
-    return RayProgram(
-        name="Local Scheduling — Bottom-Up",
-        description=(
-            "演示 Ray bottom-up 调度器最常见的一种情形：\n"
-            "本地节点资源足够、参数也在本地时，本地调度器直接处理任务，不会上抛给全局调度器。\n\n"
-            "这正是论文把它称为 “bottom-up” 的原因 —— 绝大多数任务在叶子节点就消化掉了。"
-        ),
-        paper_mapping=(
-            "**对应位置**：§4.3 “Bottom-Up Distributed Scheduler” + Figure 4（分层调度）。\n\n"
-            "论文的核心调度论点：单一全局调度器扛不住每秒百万级 task 的吞吐，"
-            "所以每个节点的**本地调度器**默认就地承接任务，只有满足不了时才向上汇报。\n\n"
-            "本示例隔离演示这条默认路径：\n"
-            "• 数据在 N1、资源也够 —— 不转发、不走全局调度器\n"
-            "• GCS 只发生一次 task_table 写入\n\n"
-            "对比另外两个示例：`load_balancing` 演示**过载**触发上抛，"
-            "`fault_tolerance` 演示**节点崩溃**后的恢复路径。"
-        ),
-        num_nodes=2,
-        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)"},
-        node_resources={
-            "N1": {"CPU": 4, "GPU": 0},
-            "N2": {"CPU": 4, "GPU": 0},
-        },
-        operations=[
-            RegisterFunction(function_name="double", num_returns=1, resources={"CPU": 1}),
-            PutOp(object_id="x", value=5, node="N1"),
-            RemoteCallOp(function_name="double", args=["x"], calling_node="N1"),
-            GetOp(object_id="obj_0", calling_node="N1"),
-        ],
-    )
-
-
-def create_chained_tasks_example() -> RayProgram:
-    """Chained tasks — data and control edges through a pipeline."""
-    return RayProgram(
-        name="Chained Tasks — Data & Control Edges",
-        description=(
-            "演示链式 remote 调用：上一个 task 的输出直接作为下一个 task 的输入。\n"
-            "通过这条数据流水线展示 task 之间的 **data edge**，"
-            "以及 Ray 的动态任务图如何即时捕获这些依赖。\n\n"
-            "流水线：load_data → preprocess → train → evaluate"
-        ),
-        paper_mapping=(
-            "**对应位置**：§3 “Programming and Computation Model”，重点是 **动态任务图**。\n\n"
-            "图中两类边：\n"
-            "• **Data edge**：一个 task 消费另一个 task 的 future\n"
-            "• **Control edge**：一个 task 内部再发起 remote 调用\n\n"
-            "本示例展示 `f.remote(g.remote(...))` 这种调用如何在运行时**懒构建**任务图 —— "
-            "它不像 TensorFlow 静态图或 Spark DAG 那样需要事先声明。\n\n"
-            "每条边对应 GCS 里 object_table（data edge）或 task_table（control edge）的一行，"
-            "这也是后续 **lineage-based recovery**（§4.2.1）能成立的基础 —— "
-            "参见 `fault_tolerance` 示例。"
-        ),
-        num_nodes=3,
-        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker+)", "N3": "N3 (Worker)"},
-        node_resources={
-            "N1": {"CPU": 4, "GPU": 0},
-            "N2": {"CPU": 4, "GPU": 1},
-            "N3": {"CPU": 4, "GPU": 2},
-        },
-        operations=[
-            RegisterFunction(function_name="load_data", num_returns=1, resources={"CPU": 1}),
-            RegisterFunction(function_name="preprocess", num_returns=1, resources={"CPU": 1}),
-            RegisterFunction(function_name="train", num_returns=1, resources={"CPU": 1, "GPU": 1}),
-            RegisterFunction(function_name="evaluate", num_returns=1, resources={"CPU": 1}),
-            RemoteCallOp(function_name="load_data", args=[], calling_node="N1"),
-            RemoteCallOp(function_name="preprocess", args=["obj_0"], calling_node="N1"),
-            RemoteCallOp(function_name="train", args=["obj_1"], calling_node="N1"),
-            RemoteCallOp(function_name="evaluate", args=["obj_2"], calling_node="N1"),
-            GetOp(object_id="obj_3", calling_node="N1"),
-        ],
-    )
-
-
-def create_load_balancing_example() -> RayProgram:
-    """Load-based forwarding — show local scheduler escalation on overload."""
-    return RayProgram(
-        name="Load Balancing — Local Overload Forwarding",
-        description=(
-            "Driver 从 N1 一次性提交 7 个轻量 task。\n\n"
-            "N1 的本地调度器按 bottom-up 原则**就地承接**，"
-            "直到自己的队列长度达到过载阈值（5）：\n"
-            "• 前 5 个 task 留在 N1\n"
-            "• 第 6、7 个被上抛给全局调度器\n"
-            "• 全局调度器按心跳上报的负载，把它们分散到 N2 和 N3\n\n"
-            "可以与 RL 示例对照看：那里是 **GPU 资源不足**触发上抛，这里是 **队列过载**触发上抛。"
-        ),
-        paper_mapping=(
-            "**对应位置**：§4.3 “Bottom-Up Distributed Scheduler” 最后一段。\n\n"
-            "论文写到：本地调度器在两种情况下会上抛 —— "
-            "**节点过载** 或 **资源无法满足**。本示例隔离演示**过载**这一条路径。\n\n"
-            "全局调度器随后按论文公式打分：\n"
-            "`estimated_waiting_time = queue_time + transfer_time`\n"
-            "事件 detail 里直接显示了每个候选节点的分数。\n\n"
-            "心跳保持全局调度器的 `node_loads` 表新鲜 —— 哪个节点队列变长，下次决策就避开它。\n"
-            "这正是论文 §6 评测中 Ray 能做到百万 task/s 吞吐、调度器不成瓶颈的根本原因。"
-        ),
-        num_nodes=3,
-        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)", "N3": "N3 (Worker)"},
-        node_resources={
-            "N1": {"CPU": 4, "GPU": 0},
-            "N2": {"CPU": 4, "GPU": 0},
-            "N3": {"CPU": 4, "GPU": 0},
-        },
-        operations=[
-            RegisterFunction(function_name="quick", num_returns=1, resources={"CPU": 1}),
-            # Open burst window so the queue actually grows visibly — without
-            # this the synchronous engine would drain the queue between every
-            # submission and the audience would never see N1 'overloaded'.
-            BurstStart(note="Driver dispatches a burst of 7 quick.remote() calls from N1."),
-            RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
-            RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
-            RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
-            RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
-            RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
-            RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
-            RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
-            BurstEnd(note="All 7 tasks have been admitted somewhere — now the workers run."),
-            GetOp(object_id="obj_6", calling_node="N1"),
-        ],
-    )
+# def create_simple_local_example() -> RayProgram:
+#     """Local scheduling — the bottom-up common case."""
+#     return RayProgram(
+#         name="Local Scheduling — Bottom-Up",
+#         description=(
+#             "演示 Ray bottom-up 调度器最常见的一种情形：\n"
+#             "本地节点资源足够、参数也在本地时，本地调度器直接处理任务，不会上抛给全局调度器。\n\n"
+#             "这正是论文把它称为 “bottom-up” 的原因 —— 绝大多数任务在叶子节点就消化掉了。"
+#         ),
+#         paper_mapping=(
+#             "**对应位置**：§4.3 “Bottom-Up Distributed Scheduler” + Figure 4（分层调度）。\n\n"
+#             "论文的核心调度论点：单一全局调度器扛不住每秒百万级 task 的吞吐，"
+#             "所以每个节点的**本地调度器**默认就地承接任务，只有满足不了时才向上汇报。\n\n"
+#             "本示例隔离演示这条默认路径：\n"
+#             "• 数据在 N1、资源也够 —— 不转发、不走全局调度器\n"
+#             "• GCS 只发生一次 task_table 写入\n\n"
+#             "对比另外两个示例：`load_balancing` 演示**过载**触发上抛，"
+#             "`fault_tolerance` 演示**节点崩溃**后的恢复路径。"
+#         ),
+#         num_nodes=2,
+#         node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)"},
+#         node_resources={
+#             "N1": {"CPU": 4, "GPU": 0},
+#             "N2": {"CPU": 4, "GPU": 0},
+#         },
+#         operations=[
+#             RegisterFunction(function_name="double", num_returns=1, resources={"CPU": 1}),
+#             PutOp(object_id="x", value=5, node="N1"),
+#             RemoteCallOp(function_name="double", args=["x"], calling_node="N1"),
+#             GetOp(object_id="obj_0", calling_node="N1"),
+#         ],
+#     )
+#
+#
+# def create_chained_tasks_example() -> RayProgram:
+#     """Chained tasks — data and control edges through a pipeline."""
+#     return RayProgram(
+#         name="Chained Tasks — Data & Control Edges",
+#         description=(
+#             "演示链式 remote 调用：上一个 task 的输出直接作为下一个 task 的输入。\n"
+#             "通过这条数据流水线展示 task 之间的 **data edge**，"
+#             "以及 Ray 的动态任务图如何即时捕获这些依赖。\n\n"
+#             "流水线：load_data → preprocess → train → evaluate"
+#         ),
+#         paper_mapping=(
+#             "**对应位置**：§3 “Programming and Computation Model”，重点是 **动态任务图**。\n\n"
+#             "图中两类边：\n"
+#             "• **Data edge**：一个 task 消费另一个 task 的 future\n"
+#             "• **Control edge**：一个 task 内部再发起 remote 调用\n\n"
+#             "本示例展示 `f.remote(g.remote(...))` 这种调用如何在运行时**懒构建**任务图 —— "
+#             "它不像 TensorFlow 静态图或 Spark DAG 那样需要事先声明。\n\n"
+#             "每条边对应 GCS 里 object_table（data edge）或 task_table（control edge）的一行，"
+#             "这也是后续 **lineage-based recovery**（§4.2.1）能成立的基础 —— "
+#             "参见 `fault_tolerance` 示例。"
+#         ),
+#         num_nodes=3,
+#         node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker+)", "N3": "N3 (Worker)"},
+#         node_resources={
+#             "N1": {"CPU": 4, "GPU": 0},
+#             "N2": {"CPU": 4, "GPU": 1},
+#             "N3": {"CPU": 4, "GPU": 2},
+#         },
+#         operations=[
+#             RegisterFunction(function_name="load_data", num_returns=1, resources={"CPU": 1}),
+#             RegisterFunction(function_name="preprocess", num_returns=1, resources={"CPU": 1}),
+#             RegisterFunction(function_name="train", num_returns=1, resources={"CPU": 1, "GPU": 1}),
+#             RegisterFunction(function_name="evaluate", num_returns=1, resources={"CPU": 1}),
+#             RemoteCallOp(function_name="load_data", args=[], calling_node="N1"),
+#             RemoteCallOp(function_name="preprocess", args=["obj_0"], calling_node="N1"),
+#             RemoteCallOp(function_name="train", args=["obj_1"], calling_node="N1"),
+#             RemoteCallOp(function_name="evaluate", args=["obj_2"], calling_node="N1"),
+#             GetOp(object_id="obj_3", calling_node="N1"),
+#         ],
+#     )
+#
+#
+# def create_load_balancing_example() -> RayProgram:
+#     """Load-based forwarding — show local scheduler escalation on overload."""
+#     return RayProgram(
+#         name="Load Balancing — Local Overload Forwarding",
+#         description=(
+#             "Driver 从 N1 一次性提交 7 个轻量 task。\n\n"
+#             "N1 的本地调度器按 bottom-up 原则**就地承接**，"
+#             "直到自己的队列长度达到过载阈值（5）：\n"
+#             "• 前 5 个 task 留在 N1\n"
+#             "• 第 6、7 个被上抛给全局调度器\n"
+#             "• 全局调度器按心跳上报的负载，把它们分散到 N2 和 N3\n\n"
+#             "可以与 RL 示例对照看：那里是 **GPU 资源不足**触发上抛，这里是 **队列过载**触发上抛。"
+#         ),
+#         paper_mapping=(
+#             "**对应位置**：§4.3 “Bottom-Up Distributed Scheduler” 最后一段。\n\n"
+#             "论文写到：本地调度器在两种情况下会上抛 —— "
+#             "**节点过载** 或 **资源无法满足**。本示例隔离演示**过载**这一条路径。\n\n"
+#             "全局调度器随后按论文公式打分：\n"
+#             "`estimated_waiting_time = queue_time + transfer_time`\n"
+#             "事件 detail 里直接显示了每个候选节点的分数。\n\n"
+#             "心跳保持全局调度器的 `node_loads` 表新鲜 —— 哪个节点队列变长，下次决策就避开它。\n"
+#             "这正是论文 §6 评测中 Ray 能做到百万 task/s 吞吐、调度器不成瓶颈的根本原因。"
+#         ),
+#         num_nodes=3,
+#         node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)", "N3": "N3 (Worker)"},
+#         node_resources={
+#             "N1": {"CPU": 4, "GPU": 0},
+#             "N2": {"CPU": 4, "GPU": 0},
+#             "N3": {"CPU": 4, "GPU": 0},
+#         },
+#         operations=[
+#             RegisterFunction(function_name="quick", num_returns=1, resources={"CPU": 1}),
+#             # Open burst window so the queue actually grows visibly — without
+#             # this the synchronous engine would drain the queue between every
+#             # submission and the audience would never see N1 'overloaded'.
+#             BurstStart(note="Driver dispatches a burst of 7 quick.remote() calls from N1."),
+#             RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
+#             RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
+#             RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
+#             RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
+#             RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
+#             RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
+#             RemoteCallOp(function_name="quick", args=[], calling_node="N1"),
+#             BurstEnd(note="All 7 tasks have been admitted somewhere — now the workers run."),
+#             GetOp(object_id="obj_6", calling_node="N1"),
+#         ],
+#     )
 
 
 def create_hot_object_example() -> RayProgram:
@@ -489,9 +489,9 @@ def create_fault_tolerance_example() -> RayProgram:
 ALL_PROGRAMS = {
     "add": create_add_example,
     "rl": create_rl_example,
-    "local": create_simple_local_example,
-    "chained": create_chained_tasks_example,
-    "load_balancing": create_load_balancing_example,
+    # "local": create_simple_local_example,
+    # "chained": create_chained_tasks_example,
+    # "load_balancing": create_load_balancing_example,
     "hot_object": create_hot_object_example,
     "fault_tolerance": create_fault_tolerance_example,
 }
