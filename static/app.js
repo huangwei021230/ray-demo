@@ -516,6 +516,9 @@ class RayDemo {
     const px = 6;
     let cy = px + 18 + 12 + 8 + 6;
     if (node.is_driver) cy += 28;
+    // Resources line
+    const resources = node.resources || {};
+    if (resources.CPU || resources.GPU) cy += 12;
     const workers = node.workers || [];
     cy += 18 + Math.max(workers.length, 0) * 18 + 3 + 3;
     cy += 36 + 3;
@@ -667,6 +670,18 @@ class RayDemo {
       class: "arch-subtitle", "font-size": "9", "text-anchor": "end", fill: roleColor
     }));
     cy += 12;
+
+    // Display resources
+    var resources = node.resources || {};
+    var resParts = [];
+    if (resources.CPU) resParts.push("CPU:" + resources.CPU);
+    if (resources.GPU) resParts.push("GPU:" + resources.GPU);
+    if (resParts.length > 0) {
+      g.appendChild(this.svgText(resParts.join("  "), x + px + 2, cy + 8, {
+        class: "arch-value", "font-size": "8", fill: "#64748b"
+      }));
+      cy += 12;
+    }
 
     g.appendChild(this.svgEl("line", {
       x1: x + px, y1: cy, x2: x + w - px, y2: cy, class: "arch-divider"

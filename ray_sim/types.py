@@ -183,10 +183,17 @@ class NodeState:
     actors: List[ActorID] = field(default_factory=list)
     is_driver: bool = False
     is_dead: bool = False
+    resources: Dict[str, float] = field(default_factory=dict)  # CPU, GPU, etc.
 
 @dataclass
 class GCSState:
-    """State of the Global Control Store"""
+    """State of the Global Control Store
+    
+    Per the paper, GCS stores:
+    - Object Table: object locations and sizes
+    - Function Table: registered functions
+    - Actor Table: actor state
+    """
     object_table: Dict[ObjectID, Dict] = field(default_factory=dict)  # object_id -> {location, size}
     task_table: Dict[TaskID, Dict] = field(default_factory=dict)      # task_id -> {status, node, ...}
     function_table: Dict[str, Dict] = field(default_factory=dict)     # function_name -> info
@@ -246,6 +253,7 @@ class RemoteCallOp(ProgramOp):
     create_result: bool = True  # Whether to create result data nodes
     label: str = ""  # Custom label for task graph node
     result_label: str = ""  # Custom label for result data node
+    result_id: str = ""  # Custom object ID for result (e.g., "c" for add(a,b)=c)
 
 @dataclass
 class ActorCreateOp(ProgramOp):

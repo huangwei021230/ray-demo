@@ -23,7 +23,10 @@ class GlobalControlStore:
     
     A key-value store with pub-sub functionality.
     Uses sharding for scale and chain replication for fault tolerance.
-    Stores: Object Table, Task Table, Function Table, Actor Table.
+    Stores: Object Table, Function Table, Actor Table.
+    
+    Note: Task Table is NOT in GCS per the paper. Task scheduling state
+    is managed by local schedulers and the global scheduler.
     
     Key design: enables every component in the system to be stateless.
     """
@@ -315,6 +318,7 @@ class Node:
             actors=list(self.actors),
             is_driver=self.is_driver,
             is_dead=self.is_dead,
+            resources=dict(self.resources),
         )
 
 
@@ -513,7 +517,8 @@ class ExecutionEngine:
         self.gcs.register_object(op.object_id, op.node, size=100)
         
         # Add to task graph as a data node
-        self._add_graph_node(op.object_id, "data", str(op.value), "completed")
+        # Use object_id as label (e.g., "a", "b") for clarity
+        self._add_graph_node(op.object_id, "data", op.object_id, "completed")
         
         event = StepEvent(
             phase=StepPhase.TASK_SUBMIT,
@@ -525,7 +530,7 @@ class ExecutionEngine:
             highlights=[HighlightHint(f"{op.node}_object_store", "new"), HighlightHint("GCS_object_table", "new")],
             arrows=[ArrowHint(f"{op.node}_driver", f"{op.node}_object_store", f"put({op.value})", "data"),
                     ArrowHint(f"{op.node}_object_store", "GCS", f"register {op.object_id}@{op.node}", "control", "dashed")],
-            new_graph_nodes=[TaskGraphNode(op.object_id, "data", str(op.value), "completed")],
+            new_graph_nodes=[TaskGraphNode(op.object_id, "data", op.object_id, "completed")],
             data_changes={"gcs_object_table_add": {op.object_id: {"location": op.node, "size": 100}}},
         )
         self._record_step(event)
@@ -540,9 +545,16 @@ class ExecutionEngine:
         4. Worker executes task, stores results & registers in GCS (single step)
         """
         task_id = self._next_task_id()
-        result_ids = [self._next_object_id() for _ in range(
-            self.functions.get(op.function_name, FunctionInfo(op.function_name)).num_returns
-        )] if op.create_result else []
+        if op.create_result:
+            if op.result_id:
+                # Use custom result ID (e.g., "c" for add(a,b)=c)
+                result_ids = [op.result_id]
+            else:
+                result_ids = [self._next_object_id() for _ in range(
+                    self.functions.get(op.function_name, FunctionInfo(op.function_name)).num_returns
+                )]
+        else:
+            result_ids = []
         
         task_spec = TaskSpec(
             task_id=task_id,
@@ -1500,6 +1512,7 @@ class ExecutionEngine:
                 "workers": nstate.workers,
                 "worker_tasks": nstate.worker_tasks,
                 "actors": nstate.actors,
+                "resources": nstate.resources,
             }
         
         return result

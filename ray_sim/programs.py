@@ -22,7 +22,7 @@ from .types import *
 def create_add_example() -> RayProgram:
     """add(a, b) — paper's Figure 5 end-to-end walkthrough."""
     return RayProgram(
-        name="add(a, b) — Paper Figure 5",
+        name="add(a, b) — Paper Figure 7",
         description=(
             "论文的端到端示例：执行 add.remote(a, b)，其中 a 在 N1、b 在 N2。\n"
             "本示例打通 Ray 一次 remote 调用的全部环节：\n"
@@ -34,7 +34,7 @@ def create_add_example() -> RayProgram:
             "• ray.get() 再经 GCS 找到结果并返回"
         ),
         paper_mapping=(
-            "**对应位置**：Figure 5（§4.5 “Putting Everything Together”）。\n\n"
+            "**对应位置**：Figure 7（§4.5 “Putting Everything Together”）。\n\n"
             "这是论文用来展示完整消息流的样板示例：\n\n"
             "• Driver 把 TaskSpec 提交给本地调度器；任务的 CPU 需求由 N1 自己满足，"
             "所以 bottom-up 调度器**就地承接**，不上抛全局调度器（§4.3）。\n"
@@ -46,17 +46,34 @@ def create_add_example() -> RayProgram:
             "这正是让调度器和 Worker 都保持无状态、可水平扩展的根本设计（§4.2）。"
         ),
         num_nodes=2,
-        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker)"},
+        node_labels={"N1": "N1 (Driver)", "N2": "N2 (Worker+GPU)"},
         node_resources={
             "N1": {"CPU": 4, "GPU": 0},
-            "N2": {"CPU": 4, "GPU": 0},
+            "N2": {"CPU": 4, "GPU": 1},
         },
         operations=[
-            RegisterFunction(function_name="add", num_returns=1, resources={"CPU": 1}),
+            # Step 0: Register function with GCS (requires GPU)
+            RegisterFunction(
+                function_name="add",
+                num_returns=1,
+                resources={"CPU": 1, "GPU": 1},
+            ),
+            # Put objects a and b on different nodes
             PutOp(object_id="a", value=1, node="N1"),
             PutOp(object_id="b", value=2, node="N2"),
-            RemoteCallOp(function_name="add", args=["a", "b"], calling_node="N1"),
-            GetOp(object_id="obj_0", calling_node="N1"),
+            # Call add.remote(a, b) from N1
+            # N1 cannot satisfy GPU requirement → forwards to global scheduler
+            # Global scheduler queries GCS, finds b@N2, selects N2
+            RemoteCallOp(
+                function_name="add",
+                args=["a", "b"],
+                calling_node="N1",
+                label="add(a,b)",
+                result_label="c",
+                result_id="c",
+            ),
+            # Get the result - triggers GCS pub-sub callback
+            GetOp(object_id="c", calling_node="N1"),
         ],
     )
 
@@ -87,9 +104,9 @@ def create_rl_example() -> RayProgram:
     - Stateful edges: A10→{A11,A12}, A20→{A21,A22} (from actor init to methods)
     """
     return RayProgram(
-        name="RL Training — Paper Figure 2",
+        name="RL Training — Paper Figure 4",
         description=(
-            "论文的 RL 训练示例（Figure 1 & 2）：\n"
+            "论文的 RL 训练示例（Figure 3 & 4）：\n"
             "train_policy() 作为顶层任务，先创建一个 policy 和若干 simulator actor，"
             "并行跑 rollout，再用结果更新 policy，循环两轮。\n\n"
             "本示例集中演示三件事：\n"
